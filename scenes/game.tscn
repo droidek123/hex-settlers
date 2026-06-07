@@ -1,0 +1,8 @@
+[gd_scene format=3 uid="uid://weab4do51guf"]
+
+[ext_resource type="Script" uid="uid://6axhjqfrw1te" path="res://game.gd" id="1_uwrxv"]
+[ext_resource type="PackedScene" uid="uid://cl44svt6dojr7" path="res://scenes/hex.tscn" id="2_yqjtg"]
+
+[node name="Game" type="Node2D" unique_id=423652728]
+script = ExtResource("1_uwrxv")
+hex_scene = ExtResource("2_yqjtg")

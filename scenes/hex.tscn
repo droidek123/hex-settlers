@@ -1,0 +1,14 @@
+[gd_scene format=3 uid="uid://cl44svt6dojr7"]
+
+[ext_resource type="Script" uid="uid://b32l47fs31icj" path="res://scenes/hex.gd" id="1_b6u1t"]
+
+[node name="Hex" type="Node2D" unique_id=862411057]
+script = ExtResource("1_b6u1t")
+
+[node name="Polygon2D" type="Polygon2D" parent="." unique_id=771620774]
+color = Color(0, 1, 0, 1)
+
+[node name="NumberLabel" type="Label" parent="." unique_id=165106735]
+offset_right = 40.0
+offset_bottom = 23.0
+theme_override_colors/font_color = Color(0, 0, 0, 1)
