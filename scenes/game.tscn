@@ -2,7 +2,11 @@
 
 [ext_resource type="Script" uid="uid://6axhjqfrw1te" path="res://game.gd" id="1_uwrxv"]
 [ext_resource type="PackedScene" uid="uid://cl44svt6dojr7" path="res://scenes/hex.tscn" id="2_yqjtg"]
+[ext_resource type="PackedScene" uid="uid://8xjk3sbwgl4b" path="res://scenes/vertex.tscn" id="3_lnu2h"]
+[ext_resource type="PackedScene" uid="uid://dnmk4b11jx8c5" path="res://scenes/road.tscn" id="4_lbhrr"]
 
 [node name="Game" type="Node2D" unique_id=423652728]
 script = ExtResource("1_uwrxv")
 hex_scene = ExtResource("2_yqjtg")
+vertex_scene = ExtResource("3_lnu2h")
+road_scene = ExtResource("4_lbhrr")

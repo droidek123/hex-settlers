@@ -1,0 +1,10 @@
+[gd_scene format=3 uid="uid://dnmk4b11jx8c5"]
+
+[ext_resource type="Script" uid="uid://b4ps87hsnj6xk" path="res://road.gd" id="1_mv8x7"]
+
+[node name="Road" type="Area2D" unique_id=1526846050]
+script = ExtResource("1_mv8x7")
+
+[node name="Polygon2D" type="Polygon2D" parent="." unique_id=1329174355]
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="." unique_id=1492221575]
