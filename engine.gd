@@ -340,7 +340,7 @@ class Move:
 # ENGINE STATE
 # ---------------------------------------------------------------------------
 
-var board: BoardPosition = null
+# var board: BoardPosition = null
 
 
 # ---------------------------------------------------------------------------
@@ -356,18 +356,23 @@ func _ready() -> void:
 # ---------------------------------------------------------------------------
 
 ## Initialize the engine for a new game with the given number of players.
-func new_game(num_players: int = 3) -> void:
+func new_game(num_players: int = 3) -> BoardPosition:
 	assert(num_players >= 2 and num_players <= MAX_PLAYERS,
 		"num_players must be 2..%d" % MAX_PLAYERS)
-	board = BoardPosition.new(num_players)
-	_initialize_board_topology()
+	var board = BoardPosition.new(num_players)
+	_initialize_board_topology(board)
+	return board
 
 
 ## Return the best move for the current player given the board position.
 ## This is the primary interface: the game calls this, gets a Move back,
 ## applies it, and calls again if it's still the same player's turn.
 func search(pos: BoardPosition) -> Move:
-	board = pos
+	# board = pos
+
+	var moves : Array[Move] = pos.generate_moves(pos)
+
+	return moves.pick_random()
 
 	match pos.phase:
 		Phase.SETUP_FORWARD, Phase.SETUP_BACKWARD:
@@ -434,8 +439,8 @@ func apply_move(pos: BoardPosition, move: Move) -> BoardPosition:
 ## Set up the fixed 19-hex / 54-vertex / 72-road topology.
 ## This is called once in new_game(). The actual resource/token assignment
 ## and port placement is done by the game and fed back via BoardPosition.
-func _initialize_board_topology() -> void:
-	var b := board
+func _initialize_board_topology(board_position: BoardPosition) -> void:
+	var b := board_position;
 
 	# --- Hexes (axial coordinates for radius-2 hex grid) ---
 	var axial_coords: Array[Vector2i] = []
