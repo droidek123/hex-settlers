@@ -223,9 +223,6 @@ class BoardPosition:
 	var longest_road_player: int = -1    # -1 = unclaimed
 	var longest_road_length: int = 0     # Current threshold (starts at 4, then 5+)
 
-	# --- Dice ---
-	var last_dice_roll: int = 0          # 0 = not rolled yet this turn
-
 	func _init(players_count: int = 3) -> void:
 		num_players = players_count
 		players.resize(num_players)
@@ -235,6 +232,36 @@ class BoardPosition:
 
 	func _to_string() -> String:
 		return "BoardPosition(P%d turn=%d phase=%d)" % [current_player, turn_number, phase]
+	
+	func clone() -> BoardPosition:
+		var dupl = BoardPosition.new(num_players)
+		dupl.current_player = current_player
+		dupl.phase = phase
+		dupl.turn_number = turn_number
+		
+		#look into cloning
+		dupl.hexes = hexes
+		dupl.vertices = vertices
+		dupl.roads = roads
+
+		dupl.players = players
+
+		dupl.dev_deck_remaining = dev_deck_remaining
+		
+		dupl.setup_placements = setup_placements
+		dupl.setup_last_vertex_id = setup_last_vertex_id
+		
+		dupl.free_roads_remaining = free_roads_remaining
+
+		dupl.players_to_discard = players_to_discard
+
+		dupl.largest_army_player = largest_army_player
+		dupl.largest_army_size = largest_army_size
+
+		dupl.longest_road_player = longest_road_player
+		dupl.longest_road_length = longest_road_length
+				
+		return dupl
 	
 	func generate_moves() -> Array[Move]:
 		match phase:
@@ -560,9 +587,8 @@ func new_game(num_players: int = 3) -> BoardPosition:
 ## This is the primary interface: the game calls this, gets a Move back,
 ## applies it, and calls again if it's still the same player's turn.
 func search(pos: BoardPosition) -> Move:
-	# board = pos
 	var move_list : Array[Move] = pos.generate_moves()
-
+	
 	return move_list.pick_random()
 
 
@@ -571,38 +597,41 @@ func search(pos: BoardPosition) -> Move:
 ## it to apply the returned move.
 func apply_move(pos: BoardPosition, move: Move) -> BoardPosition:
 	# For now, mutate in place. A full engine would deep-copy for search.
+	var new_board = pos.clone()
+	
 	match move.type:
 		Move.Type.SETTLEMENT:
-			_apply_settlement(pos, move.vertex_id)
+			_apply_settlement(new_board, move.vertex_id)
 		Move.Type.ROAD:
-			_apply_road(pos, move.road_id)
+			_apply_road(new_board, move.road_id)
 		Move.Type.BUILD_SETTLEMENT:
-			_apply_build_settlement(pos, move.vertex_id)
+			_apply_build_settlement(new_board, move.vertex_id)
 		Move.Type.BUILD_CITY:
-			_apply_build_city(pos, move.vertex_id)
+			_apply_build_city(new_board, move.vertex_id)
 		Move.Type.BUILD_ROAD:
-			_apply_build_road(pos, move.road_id)
+			_apply_build_road(new_board, move.road_id)
 		Move.Type.BUY_DEV_CARD:
-			_apply_buy_dev_card(pos)
+			_apply_buy_dev_card(new_board)
 		Move.Type.PLAY_KNIGHT:
-			_apply_play_knight(pos)
+			_apply_play_knight(new_board)
 		Move.Type.PLAY_MONOPOLY:
-			_apply_play_monopoly(pos, move.monopoly_resource)
+			_apply_play_monopoly(new_board, move.monopoly_resource)
 		Move.Type.PLAY_YEAR_OF_PLENTY:
-			_apply_play_year_of_plenty(pos, move.yop_resource_1, move.yop_resource_2)
+			_apply_play_year_of_plenty(new_board, move.yop_resource_1, move.yop_resource_2)
 		Move.Type.PLAY_ROAD_BUILDING:
-			_apply_play_road_building(pos)
+			_apply_play_road_building(new_board)
 		Move.Type.TRADE_BANK:
-			_apply_trade_bank(pos, move.bank_give, move.bank_receive, move.bank_give_amount)
+			_apply_trade_bank(new_board, move.bank_give, move.bank_receive, move.bank_give_amount)
 		Move.Type.TRADE_PLAYER:
-			_apply_trade_player(pos, move.trade_target_player, move.trade_give, move.trade_receive)
+			_apply_trade_player(new_board, move.trade_target_player, move.trade_give, move.trade_receive)
 		Move.Type.MOVE_ROBBER:
-			_apply_move_robber(pos, move.robber_hex_id, move.robber_steal_target)
+			_apply_move_robber(new_board, move.robber_hex_id, move.robber_steal_target)
 		Move.Type.DISCARD:
-			_apply_discard(pos, move.discard_resources)
+			_apply_discard(new_board, move.discard_resources)
 		Move.Type.END_TURN:
-			_apply_end_turn(pos)
-	return pos
+			_apply_end_turn(new_board)
+	
+	return new_board
 
 
 # ---------------------------------------------------------------------------
