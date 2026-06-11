@@ -235,7 +235,199 @@ class BoardPosition:
 
 	func _to_string() -> String:
 		return "BoardPosition(P%d turn=%d phase=%d)" % [current_player, turn_number, phase]
+	
+	func generate_moves() -> Array[Move]:
+		match phase:
+			Phase.SETUP_FORWARD, Phase.SETUP_BACKWARD:
+				return _movegen_setup()
+			# Phase.ROLL:
+				# Dice has been resolved before search is called, so this
+				# phase should be transient. If we land here, just move on.
+				# return _search_main(pos)
+			Phase.DISCARD:
+				return _movegen_discard()
+			Phase.ROBBER:
+				return _movegen_robber()
+			Phase.ROAD_BUILDING:
+				return _movegen_road_building()
+			Phase.MAIN:
+				return _movegen_main()
+			_:
+				return [Move.new(Move.Type.END_TURN)]
+				
+				
+	func _movegen_setup() -> Array[Move]:
+		# Setup: first place a settlement, then a road.
+		if setup_last_vertex_id == -1:
+			return _movegen_setup_settlement()
+		else:
+			return _movegen_setup_road()
 
+
+	func _movegen_setup_settlement() -> Array[Move]:
+		# TODO: evaluate best vertex (resource probability, port access, blocking)
+		# For now, pick first legal vertex.
+		var move_list = []
+		
+		for v in vertices:
+			if _is_valid_settlement_placement(v.id, true):
+				var move := Move.new(Move.Type.SETTLEMENT)
+				move.vertex_id = v.id
+				move_list.append(move)
+
+		return move_list
+
+	func _movegen_setup_road() -> Array[Move]:
+		# Must attach to the last settlement placed in setup.
+		var anchor: int = setup_last_vertex_id
+		var move_list = []
+		
+		for r in roads:
+			if r.owner_id == -1 and (r.vertex_a_id == anchor or r.vertex_b_id == anchor):
+				var move := Move.new(Move.Type.ROAD)
+				move.road_id = r.id
+				move_list.append(move)
+
+		return move_list
+
+	func _movegen_main() -> Array[Move]:
+		# TODO: full MCTS / heuristic search
+		# Priority: play dev cards -> build -> trade -> end turn
+		return [Move.new(Move.Type.END_TURN)]
+
+
+	func _movegen_discard() -> Array[Move]:
+		var pid := current_player
+		var p := players[pid]
+		var total := p.total_resources()
+		if total <= 7:
+			# Nothing to discard — shouldn't be in DISCARD phase, but handle gracefully
+			return [Move.new(Move.Type.END_TURN)]
+		var to_discard: int = total / 2
+		var discard := _choose_discard(p, to_discard)
+		var move := Move.new(Move.Type.DISCARD)
+		move.discard_resources = discard
+		return [move]
+
+
+	func _movegen_robber() -> Array[Move]:
+		# TODO: pick hex that hurts opponents most / helps self least, then steal
+		# For now, move robber to first hex that isn't current robber hex and has opponents.
+		for h in hexes:
+			if h.has_robber:
+				continue
+			if h.resource == "desert":
+				continue
+			# Check if any opponent has a settlement/city adjacent
+			var has_opponent := false
+			for vid in _hex_vertex_ids(h):
+				var v: Vertex = vertices[vid]
+				if v.is_built() and v.owner_id != current_player:
+					has_opponent = true
+					break
+			if has_opponent:
+				var move := Move.new(Move.Type.MOVE_ROBBER)
+				move.robber_hex_id = h.id
+				# Steal from a random adjacent opponent
+				for vid in _hex_vertex_ids(h):
+					var v: Vertex = vertices[vid]
+					if v.is_built() and v.owner_id != current_player:
+						move.robber_steal_target = v.owner_id
+						break
+				return [move]
+		# Fallback: just move to first non-robber hex
+		for h in hexes:
+			if not h.has_robber and h.resource != "desert":
+				var move := Move.new(Move.Type.MOVE_ROBBER)
+				move.robber_hex_id = h.id
+				move.robber_steal_target = -1
+				return [move]
+		return [Move.new(Move.Type.END_TURN)]
+
+
+	func _movegen_road_building() -> Array[Move]:
+		# Place up to 2 free roads.
+		if free_roads_remaining <= 0:
+			return [Move.new(Move.Type.END_TURN)]
+		# TODO: pick best free road
+		
+		var move_list = []
+		for r in roads:
+			if _is_valid_road_placement(r.id):
+				var move := Move.new(Move.Type.BUILD_ROAD)
+				move.road_id = r.id
+				move_list.append(move_list)
+		return move_list
+
+	func _choose_discard(p: PlayerState, count: int) -> Dictionary:
+		var result: Dictionary = {}
+		var remaining := count
+		# Discard from most abundant resources first
+		var sorted_res := RESOURCE_TYPES.duplicate()
+		sorted_res.sort_custom(func(a: String, b: String) -> bool:
+			return p.resources[a] > p.resources[b]
+		)
+		for r in sorted_res:
+			if remaining <= 0:
+				break
+			var take := mini(p.resources[r], remaining)
+			if take > 0:
+				result[r] = take
+				remaining -= take
+		return result
+
+	func _is_valid_settlement_placement(vertex_id: int, is_setup: bool) -> bool:
+		var v: Vertex = vertices[vertex_id]
+		if v.is_built():
+			return false
+		# Distance rule: no adjacent vertex can be built
+		for r in roads:
+			if r.vertex_a_id == vertex_id or r.vertex_b_id == vertex_id:
+				var other_id: int = r.vertex_b_id if r.vertex_a_id == vertex_id else r.vertex_a_id
+				if vertices[other_id].is_built():
+					return false
+		if is_setup:
+			return true
+		# Must be connected to own road
+		var pid := current_player
+		for r in roads:
+			if r.owner_id != pid:
+				continue
+			if r.vertex_a_id == vertex_id or r.vertex_b_id == vertex_id:
+				return true
+		return false
+
+
+	func _is_valid_road_placement(road_id: int) -> bool:
+		var r: Road = roads[road_id]
+		if r.is_built():
+			return false
+		var pid := current_player
+		# Must connect to own settlement/city/road
+		if vertices[r.vertex_a_id].owner_id == pid or vertices[r.vertex_b_id].owner_id == pid:
+			return true
+		# Or connect to own existing road
+		for other in roads:
+			if other.owner_id != pid:
+				continue
+			if other.id == road_id:
+				continue
+			if _roads_adjacent(r, other):
+				return true
+		return false
+
+
+	func _roads_adjacent(a: Road, b: Road) -> bool:
+		return (a.vertex_a_id == b.vertex_a_id or a.vertex_a_id == b.vertex_b_id
+			or a.vertex_b_id == b.vertex_a_id or a.vertex_b_id == b.vertex_b_id)
+			
+	func _hex_vertex_ids(hex: Hex) -> Array[int]:
+		# Return the vertex IDs adjacent to a given hex.
+		var result: Array[int] = []
+		for v in vertices:
+			if v.adjacent_hex_indices.has(hex.id):
+				result.append(v.id)
+		return result
 
 ## Move: encodes any single action a player can take.
 ##
@@ -369,28 +561,9 @@ func new_game(num_players: int = 3) -> BoardPosition:
 ## applies it, and calls again if it's still the same player's turn.
 func search(pos: BoardPosition) -> Move:
 	# board = pos
+	var move_list : Array[Move] = pos.generate_moves()
 
-	var moves : Array[Move] = pos.generate_moves(pos)
-
-	return moves.pick_random()
-
-	match pos.phase:
-		Phase.SETUP_FORWARD, Phase.SETUP_BACKWARD:
-			return _search_setup(pos)
-		Phase.ROLL:
-			# Dice has been resolved before search is called, so this
-			# phase should be transient. If we land here, just move on.
-			return _search_main(pos)
-		Phase.DISCARD:
-			return _search_discard(pos)
-		Phase.ROBBER:
-			return _search_robber(pos)
-		Phase.ROAD_BUILDING:
-			return _search_road_building(pos)
-		Phase.MAIN:
-			return _search_main(pos)
-		_:
-			return Move.new(Move.Type.END_TURN)
+	return move_list.pick_random()
 
 
 ## Apply a move to a board position, returning a new (or mutated) position.
@@ -554,102 +727,7 @@ func _road_key(a: Vector2i, b: Vector2i) -> String:
 # SEARCH — PHASE DISPATCH
 # ---------------------------------------------------------------------------
 
-func _search_setup(pos: BoardPosition) -> Move:
-	# Setup: first place a settlement, then a road.
-	if pos.setup_last_vertex_id == -1:
-		return _search_setup_settlement(pos)
-	else:
-		return _search_setup_road(pos)
 
-
-func _search_setup_settlement(pos: BoardPosition) -> Move:
-	# TODO: evaluate best vertex (resource probability, port access, blocking)
-	# For now, pick first legal vertex.
-	for v in pos.vertices:
-		if _is_valid_settlement_placement(pos, v.id, true):
-			var move := Move.new(Move.Type.SETTLEMENT)
-			move.vertex_id = v.id
-			return move
-	return Move.new(Move.Type.END_TURN)
-
-
-func _search_setup_road(pos: BoardPosition) -> Move:
-	# Must attach to the last settlement placed in setup.
-	var anchor: int = pos.setup_last_vertex_id
-	for r in pos.roads:
-		if r.owner_id == -1 and (r.vertex_a_id == anchor or r.vertex_b_id == anchor):
-			var move := Move.new(Move.Type.ROAD)
-			move.road_id = r.id
-			return move
-	return Move.new(Move.Type.END_TURN)
-
-
-func _search_main(pos: BoardPosition) -> Move:
-	# TODO: full MCTS / heuristic search
-	# Priority: play dev cards -> build -> trade -> end turn
-	return Move.new(Move.Type.END_TURN)
-
-
-func _search_discard(pos: BoardPosition) -> Move:
-	var pid := pos.current_player
-	var p := pos.players[pid]
-	var total := p.total_resources()
-	if total <= 7:
-		# Nothing to discard — shouldn't be in DISCARD phase, but handle gracefully
-		return Move.new(Move.Type.END_TURN)
-	var to_discard: int = total / 2
-	var discard := _choose_discard(p, to_discard)
-	var move := Move.new(Move.Type.DISCARD)
-	move.discard_resources = discard
-	return move
-
-
-func _search_robber(pos: BoardPosition) -> Move:
-	# TODO: pick hex that hurts opponents most / helps self least, then steal
-	# For now, move robber to first hex that isn't current robber hex and has opponents.
-	for h in pos.hexes:
-		if h.has_robber:
-			continue
-		if h.resource == "desert":
-			continue
-		# Check if any opponent has a settlement/city adjacent
-		var has_opponent := false
-		for vid in _hex_vertex_ids(pos, h):
-			var v: Vertex = pos.vertices[vid]
-			if v.is_built() and v.owner_id != pos.current_player:
-				has_opponent = true
-				break
-		if has_opponent:
-			var move := Move.new(Move.Type.MOVE_ROBBER)
-			move.robber_hex_id = h.id
-			# Steal from a random adjacent opponent
-			for vid in _hex_vertex_ids(pos, h):
-				var v: Vertex = pos.vertices[vid]
-				if v.is_built() and v.owner_id != pos.current_player:
-					move.robber_steal_target = v.owner_id
-					break
-			return move
-	# Fallback: just move to first non-robber hex
-	for h in pos.hexes:
-		if not h.has_robber and h.resource != "desert":
-			var move := Move.new(Move.Type.MOVE_ROBBER)
-			move.robber_hex_id = h.id
-			move.robber_steal_target = -1
-			return move
-	return Move.new(Move.Type.END_TURN)
-
-
-func _search_road_building(pos: BoardPosition) -> Move:
-	# Place up to 2 free roads.
-	if pos.free_roads_remaining <= 0:
-		return Move.new(Move.Type.END_TURN)
-	# TODO: pick best free road
-	for r in pos.roads:
-		if _is_valid_road_placement(pos, r.id):
-			var move := Move.new(Move.Type.BUILD_ROAD)
-			move.road_id = r.id
-			return move
-	return Move.new(Move.Type.END_TURN)
 
 
 # ---------------------------------------------------------------------------
@@ -838,50 +916,7 @@ func _apply_end_turn(pos: BoardPosition) -> void:
 # VALIDATION HELPERS
 # ---------------------------------------------------------------------------
 
-func _is_valid_settlement_placement(pos: BoardPosition, vertex_id: int, is_setup: bool) -> bool:
-	var v: Vertex = pos.vertices[vertex_id]
-	if v.is_built():
-		return false
-	# Distance rule: no adjacent vertex can be built
-	for r in pos.roads:
-		if r.vertex_a_id == vertex_id or r.vertex_b_id == vertex_id:
-			var other_id: int = r.vertex_b_id if r.vertex_a_id == vertex_id else r.vertex_a_id
-			if pos.vertices[other_id].is_built():
-				return false
-	if is_setup:
-		return true
-	# Must be connected to own road
-	var pid := pos.current_player
-	for r in pos.roads:
-		if r.owner_id != pid:
-			continue
-		if r.vertex_a_id == vertex_id or r.vertex_b_id == vertex_id:
-			return true
-	return false
 
-
-func _is_valid_road_placement(pos: BoardPosition, road_id: int) -> bool:
-	var r: Road = pos.roads[road_id]
-	if r.is_built():
-		return false
-	var pid := pos.current_player
-	# Must connect to own settlement/city/road
-	if pos.vertices[r.vertex_a_id].owner_id == pid or pos.vertices[r.vertex_b_id].owner_id == pid:
-		return true
-	# Or connect to own existing road
-	for other in pos.roads:
-		if other.owner_id != pid:
-			continue
-		if other.id == road_id:
-			continue
-		if _roads_adjacent(r, other):
-			return true
-	return false
-
-
-func _roads_adjacent(a: Road, b: Road) -> bool:
-	return (a.vertex_a_id == b.vertex_a_id or a.vertex_a_id == b.vertex_b_id
-		or a.vertex_b_id == b.vertex_a_id or a.vertex_b_id == b.vertex_b_id)
 
 
 # ---------------------------------------------------------------------------
@@ -900,24 +935,6 @@ func _give_setup_resources(pos: BoardPosition, vertex_id: int) -> void:
 		var hex: Hex = pos.hexes[hex_id]
 		if hex.resource != "desert":
 			pos.players[pid].resources[hex.resource] += 1
-
-
-func _choose_discard(p: PlayerState, count: int) -> Dictionary:
-	var result: Dictionary = {}
-	var remaining := count
-	# Discard from most abundant resources first
-	var sorted_res := RESOURCE_TYPES.duplicate()
-	sorted_res.sort_custom(func(a: String, b: String) -> bool:
-		return p.resources[a] > p.resources[b]
-	)
-	for r in sorted_res:
-		if remaining <= 0:
-			break
-		var take := mini(p.resources[r], remaining)
-		if take > 0:
-			result[r] = take
-			remaining -= take
-	return result
 
 
 # ---------------------------------------------------------------------------
@@ -994,13 +1011,7 @@ func _check_largest_army(pos: BoardPosition) -> void:
 # HEX / VERTEX LOOKUPS
 # ---------------------------------------------------------------------------
 
-func _hex_vertex_ids(pos: BoardPosition, hex: Hex) -> Array[int]:
-	# Return the vertex IDs adjacent to a given hex.
-	var result: Array[int] = []
-	for v in pos.vertices:
-		if v.adjacent_hex_indices.has(hex.id):
-			result.append(v.id)
-	return result
+
 
 
 # ---------------------------------------------------------------------------
