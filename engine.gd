@@ -259,6 +259,10 @@ class BoardPosition:
 	var longest_road_player: int = -1    # -1 = unclaimed
 	var longest_road_length: int = 0     # Current threshold (starts at 4, then 5+)
 
+	# --- Dice ---
+	var last_dice_roll: int = 0          # Result of the most recent roll (0 = none yet)
+	var robber_player: int = -1          # Player who must move robber (set on 7 or knight, cleared after)
+
 	func _init(players_count: int = 3) -> void:
 		num_players = players_count
 		players.resize(num_players)
@@ -302,6 +306,9 @@ class BoardPosition:
 
 		dupl.largest_army_player = largest_army_player
 		dupl.largest_army_size = largest_army_size
+
+		dupl.last_dice_roll = last_dice_roll
+		dupl.robber_player = robber_player
 
 		dupl.longest_road_player = longest_road_player
 		dupl.longest_road_length = longest_road_length
@@ -964,7 +971,8 @@ func _apply_play_knight(pos: BoardPosition) -> void:
 	pos.players[pid].dev_cards[DevCard.KNIGHT] -= 1
 	pos.players[pid].knights_played += 1
 	_check_largest_army(pos)
-	# Knight triggers robber phase
+	# Knight triggers robber phase — current player must move robber
+	pos.robber_player = pid
 	pos.phase = Phase.ROBBER
 
 
@@ -1025,6 +1033,9 @@ func _apply_move_robber(pos: BoardPosition, hex_id: int, steal_target: int) -> v
 				pos.players[pos.current_player].resources[r] += 1
 				break
 
+	# Clear the robber tracker — robber has been placed
+	pos.robber_player = -1
+
 	# Return to main phase (or road building if that was interrupted)
 	if pos.free_roads_remaining > 0:
 		pos.phase = Phase.ROAD_BUILDING
@@ -1047,7 +1058,8 @@ func _apply_discard(pos: BoardPosition, discard: Dictionary) -> void:
 			pos.current_player = i
 			break
 	if all_done:
-		pos.phase = Phase.ROBBER  # After discard, must move robber
+		pos.phase = Phase.ROBBER
+		pos.current_player = pos.robber_player  # Return control to the roller
 
 
 func _apply_end_turn(pos: BoardPosition) -> void:
@@ -1057,10 +1069,71 @@ func _apply_end_turn(pos: BoardPosition) -> void:
 		pos.players[pid].dev_cards[k] += pos.players[pid].new_dev_cards[k]
 		pos.players[pid].new_dev_cards[k] = 0
 
+	# Advance to next player
 	pos.current_player = (pos.current_player + 1) % pos.num_players
 	if pos.current_player == 0:
 		pos.turn_number += 1
-	pos.phase = Phase.MAIN
+
+	# Roll dice for the new player
+	var roll: int = _roll_dice()
+	pos.last_dice_roll = roll
+
+	if roll == 7:
+		# 7 triggers discard phase first.
+		# pos.current_player is the player who just rolled — remember them.
+		pos.robber_player = pos.current_player
+		_initiate_discard_phase(pos)
+		# If no one actually needs to discard, go straight to robber
+		var any_discard := false
+		for i in range(pos.num_players):
+			if pos.players_to_discard[i]:
+				any_discard = true
+				break
+		if not any_discard:
+			pos.phase = Phase.ROBBER
+			pos.current_player = pos.robber_player
+	else:
+		# Distribute resources
+		_distribute_resources(pos, roll)
+		pos.phase = Phase.MAIN
+
+
+func _roll_dice() -> int:
+	# Roll two six-sided dice and return the sum.
+	return randi_range(1, 6) + randi_range(1, 6)
+
+
+func _distribute_resources(pos: BoardPosition, roll: int) -> void:
+	# For every hex matching the roll number that does NOT have the robber,
+	# give 1 resource per adjacent settlement (2 per city) of the hex type
+	# to the owning player.
+	for hex in pos.hexes:
+		if hex.token != roll:
+			continue
+		if hex.has_robber:
+			continue
+		if hex.resource == "desert":
+			continue
+		# Find all vertices adjacent to this hex
+		for vid in _hex_vertex_ids(hex):
+			var v: Vertex = pos.vertices[vid]
+			if not v.is_built():
+				continue
+			var amount: int = 2 if v.is_city else 1
+			pos.players[v.owner_id].resources[hex.resource] += amount
+
+
+func _initiate_discard_phase(pos: BoardPosition) -> void:
+	# Mark every player with more than 7 cards as needing to discard.
+	# The discard phase starts with the first such player (lowest index).
+	for i in range(pos.num_players):
+		pos.players_to_discard[i] = pos.players[i].total_resources() > 7
+	# Find the first player who needs to discard
+	for i in range(pos.num_players):
+		if pos.players_to_discard[i]:
+			pos.current_player = i
+			break
+	pos.phase = Phase.DISCARD
 
 
 # ---------------------------------------------------------------------------
