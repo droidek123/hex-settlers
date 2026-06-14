@@ -363,9 +363,102 @@ class BoardPosition:
 		return move_list
 
 	func _movegen_main() -> Array[Move]:
-		# TODO: full MCTS / heuristic search
-		# Priority: play dev cards -> build -> trade -> end turn
-		return [Move.new(Move.Type.END_TURN)]
+		var moves: Array[Move] = []
+		var pid := current_player
+		var p := players[pid]
+
+		# --- 1. Play development cards ---
+		# Knights
+		if p.dev_cards[DevCard.KNIGHT] > 0:
+			moves.append(Move.new(Move.Type.PLAY_KNIGHT))
+		# Monopoly — one move per resource type
+		if p.dev_cards[DevCard.MONOPOLY] > 0:
+			for res in RESOURCE_TYPES:
+				var m := Move.new(Move.Type.PLAY_MONOPOLY)
+				m.monopoly_resource = res
+				moves.append(m)
+		# Year of Plenty — all unordered pairs (including same resource twice)
+		if p.dev_cards[DevCard.YEAR_OF_PLENTY] > 0:
+			for i in range(RESOURCE_TYPES.size()):
+				for j in range(i, RESOURCE_TYPES.size()):
+					var m := Move.new(Move.Type.PLAY_YEAR_OF_PLENTY)
+					m.yop_resource_1 = RESOURCE_TYPES[i]
+					m.yop_resource_2 = RESOURCE_TYPES[j]
+					moves.append(m)
+		# Road Building
+		if p.dev_cards[DevCard.ROAD_BUILDING] > 0:
+			moves.append(Move.new(Move.Type.PLAY_ROAD_BUILDING))
+
+		# --- 2. Build settlement ---
+		for v in vertices:
+			if _is_valid_settlement_placement(v.id, false):
+				if _can_afford(pid, SETTLEMENT_COST):
+					var m := Move.new(Move.Type.BUILD_SETTLEMENT)
+					m.vertex_id = v.id
+					moves.append(m)
+
+		# --- 3. Build city ---
+		for v in vertices:
+			if v.owner_id == pid and not v.is_city:
+				if _can_afford(pid, CITY_COST):
+					var m := Move.new(Move.Type.BUILD_CITY)
+					m.vertex_id = v.id
+					moves.append(m)
+
+		# --- 4. Build road ---
+		for r in roads:
+			if _is_valid_road_placement(r.id):
+				if _can_afford(pid, ROAD_COST):
+					var m := Move.new(Move.Type.BUILD_ROAD)
+					m.road_id = r.id
+					moves.append(m)
+
+		# --- 5. Buy development card ---
+		if dev_deck_remaining > 0:
+			if _can_afford(pid, DEV_CARD_COST):
+				moves.append(Move.new(Move.Type.BUY_DEV_CARD))
+
+		# --- 6. Trade with bank ---
+		# Determine the best trade ratio for each resource the player has
+		for give_res in RESOURCE_TYPES:
+			var give_ratio := _get_trade_ratio(pid, give_res)
+			if p.resources[give_res] < give_ratio:
+				continue
+			for recv_res in RESOURCE_TYPES:
+				if recv_res == give_res:
+					continue
+				var m := Move.new(Move.Type.TRADE_BANK)
+				m.bank_give = give_res
+				m.bank_receive = recv_res
+				m.bank_give_amount = give_ratio
+				moves.append(m)
+
+		# --- 7. End turn (always available) ---
+		moves.append(Move.new(Move.Type.END_TURN))
+
+		return moves
+
+
+	func _can_afford(pid: int, cost: Dictionary) -> bool:
+		for r in cost:
+			if cost[r] <= 0:
+				continue
+			if players[pid].resources[r] < cost[r]:
+				return false
+		return true
+
+
+	func _get_trade_ratio(pid: int, resource: String) -> int:
+		# Check if player has a 2:1 port for this resource
+		for v in vertices:
+			if v.owner_id == pid and v.port == resource:
+				return 2
+		# Check if player has a 3:1 port
+		for v in vertices:
+			if v.owner_id == pid and v.port == "3:1":
+				return 3
+		# Default 4:1
+		return 4
 
 
 	func _movegen_discard() -> Array[Move]:
