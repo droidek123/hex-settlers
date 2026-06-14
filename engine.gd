@@ -601,6 +601,304 @@ class BoardPosition:
 				result.append(v.id)
 		return result
 
+
+	# ---------------------------------------------------------------------------
+	# MOVE APPLICATION
+	# ---------------------------------------------------------------------------
+
+	func _apply_settlement(vertex_id: int) -> void:
+		var v: Vertex = vertices[vertex_id]
+		var pid := current_player
+		v.owner_id = pid
+		v.is_city = false
+		players[pid].settlements_built += 1
+		players[pid].victory_points += SETTLEMENT_VICTORY_POINTS
+		setup_last_vertex_id = vertex_id
+		# In setup backward, give resources from adjacent hexes
+		if phase == Phase.SETUP_BACKWARD:
+			_give_setup_resources(vertex_id)
+	func _apply_road(road_id: int) -> void:
+		var r: Road = roads[road_id]
+		var pid := current_player
+		r.owner_id = pid
+		players[pid].roads_built += 1
+		setup_last_vertex_id = -1
+		setup_placements += 1
+		
+		# Advance setup phase
+		var total_setup_steps: int = num_players * 2
+		if setup_placements >= total_setup_steps:
+			phase = Phase.MAIN
+		elif setup_placements >= num_players:
+			phase = Phase.SETUP_BACKWARD
+		else:
+			phase = Phase.SETUP_FORWARD
+		
+		# Advance to next player
+		if setup_placements < num_players:
+			current_player = setup_placements
+		else:
+			current_player = num_players - 1 - (setup_placements - num_players)
+	func _apply_build_settlement(vertex_id: int) -> void:
+		var pid := current_player
+		_pay_resources(pid, SETTLEMENT_COST)
+		var v: Vertex = vertices[vertex_id]
+		v.owner_id = pid
+		v.is_city = false
+		players[pid].settlements_built += 1
+		players[pid].victory_points += SETTLEMENT_VICTORY_POINTS
+	func _apply_build_city(vertex_id: int) -> void:
+		var pid := current_player
+		_pay_resources(pid, CITY_COST)
+		var v: Vertex = vertices[vertex_id]
+		v.is_city = true
+		players[pid].settlements_built -= 1
+		players[pid].cities_built += 1
+		players[pid].victory_points += 1  # City gives +2 total, settlement already gave +1
+	func _apply_build_road(road_id: int) -> void:
+		var pid := current_player
+		_pay_resources(pid, ROAD_COST)
+		var r: Road = roads[road_id]
+		r.owner_id = pid
+		players[pid].roads_built += 1
+		_check_longest_road()
+	func _apply_buy_dev_card() -> void:
+		var pid := current_player
+		_pay_resources(pid, DEV_CARD_COST)
+		# Draw a card (simplified — in full engine, track deck composition)
+		players[pid].new_dev_cards[DevCard.KNIGHT] += 1  # Placeholder
+		dev_deck_remaining -= 1
+	func _apply_play_knight() -> void:
+		var pid := current_player
+		players[pid].dev_cards[DevCard.KNIGHT] -= 1
+		players[pid].knights_played += 1
+		_check_largest_army()
+		# Knight triggers robber phase — current player must move robber
+		robber_player = pid
+		phase = Phase.ROBBER
+	func _apply_play_monopoly(resource: String) -> void:
+		var pid := current_player
+		players[pid].dev_cards[DevCard.MONOPOLY] -= 1
+		var total_taken := 0
+		for i in range(num_players):
+			if i == pid:
+				continue
+			var amount: int = players[i].resources[resource]
+			players[i].resources[resource] -= amount
+			total_taken += amount
+		players[pid].resources[resource] += total_taken
+	func _apply_play_year_of_plenty(res1: String, res2: String) -> void:
+		var pid := current_player
+		players[pid].dev_cards[DevCard.YEAR_OF_PLENTY] -= 1
+		players[pid].resources[res1] += 1
+		players[pid].resources[res2] += 1
+	func _apply_play_road_building() -> void:
+		var pid := current_player
+		players[pid].dev_cards[DevCard.ROAD_BUILDING] -= 1
+		free_roads_remaining = 2
+		phase = Phase.ROAD_BUILDING
+	func _apply_trade_bank(give: String, receive: String, give_amount: int) -> void:
+		var pid := current_player
+		players[pid].resources[give] -= give_amount
+		players[pid].resources[receive] += 1
+	func _apply_trade_player(target: int, give: Dictionary, receive: Dictionary) -> void:
+		var pid := current_player
+		for r in give:
+			players[pid].resources[r] -= give[r]
+			players[target].resources[r] += give[r]
+		for r in receive:
+			players[pid].resources[r] += receive[r]
+			players[target].resources[r] -= receive[r]
+	func _apply_move_robber(hex_id: int, steal_target: int) -> void:
+		# Remove robber from current hex
+		for h in hexes:
+			h.has_robber = false
+		hexes[hex_id].has_robber = true
+		
+		if steal_target >= 0 and players[steal_target].total_resources() > 0:
+			# Steal a random resource (simplified — pick first available)
+			for r in RESOURCE_TYPES:
+				if players[steal_target].resources[r] > 0:
+					players[steal_target].resources[r] -= 1
+					players[current_player].resources[r] += 1
+					break
+		
+		# Clear the robber tracker — robber has been placed
+		robber_player = -1
+		
+		# Return to main phase (or road building if that was interrupted)
+		if free_roads_remaining > 0:
+			phase = Phase.ROAD_BUILDING
+		else:
+			phase = Phase.MAIN
+	func _apply_discard(discard: Dictionary) -> void:
+		var pid := current_player
+		for r in discard:
+			players[pid].resources[r] -= discard[r]
+		players_to_discard[pid] = false
+		
+		# Check if all players have discarded
+		var all_done := true
+		for i in range(num_players):
+			if players_to_discard[i]:
+				all_done = false
+				# Move to next player who needs to discard
+				current_player = i
+				break
+		if all_done:
+			phase = Phase.ROBBER
+			current_player = robber_player  # Return control to the roller
+	func _apply_end_turn() -> void:
+		# Merge new dev cards into playable hand
+		var pid := current_player
+		for k in players[pid].new_dev_cards:
+			players[pid].dev_cards[k] += players[pid].new_dev_cards[k]
+			players[pid].new_dev_cards[k] = 0
+		
+		# Advance to next player
+		current_player = (current_player + 1) % num_players
+		if current_player == 0:
+			turn_number += 1
+		
+		# Roll dice for the new player
+		var roll: int = _roll_dice()
+		last_dice_roll = roll
+		
+		if roll == 7:
+			# 7 triggers discard phase first.
+			# pos.current_player is the player who just rolled — remember them.
+			robber_player = current_player
+			_initiate_discard_phase()
+			# If no one actually needs to discard, go straight to robber
+			var any_discard := false
+			for i in range(num_players):
+				if players_to_discard[i]:
+					any_discard = true
+					break
+			if not any_discard:
+				phase = Phase.ROBBER
+				current_player = robber_player
+		else:
+			# Distribute resources
+			_distribute_resources(roll)
+			phase = Phase.MAIN
+		
+		
+	func _roll_dice() -> int:
+		# Roll two six-sided dice and return the sum.
+		return randi_range(1, 6) + randi_range(1, 6)
+	func _distribute_resources(roll: int) -> void:
+		# For every hex matching the roll number that does NOT have the robber,
+		# give 1 resource per adjacent settlement (2 per city) of the hex type
+		# to the owning player.
+		for hex in hexes:
+			if hex.token != roll:
+				continue
+			if hex.has_robber:
+				continue
+			if hex.resource == "desert":
+				continue
+			# Find all vertices adjacent to this hex
+			for vid in _hex_vertex_ids(hex):
+				var v: Vertex = vertices[vid]
+				if not v.is_built():
+					continue
+				var amount: int = 2 if v.is_city else 1
+				players[v.owner_id].resources[hex.resource] += amount
+	func _initiate_discard_phase() -> void:
+		# Mark every player with more than 7 cards as needing to discard.
+		# The discard phase starts with the first such player (lowest index).
+		for i in range(num_players):
+			players_to_discard[i] = players[i].total_resources() > 7
+		# Find the first player who needs to discard
+		for i in range(num_players):
+			if players_to_discard[i]:
+				current_player = i
+				break
+		phase = Phase.DISCARD
+	# ---------------------------------------------------------------------------
+
+	# ---------------------------------------------------------------------------
+	# RESOURCE / ECONOMY HELPERS
+	# ---------------------------------------------------------------------------
+
+	func _pay_resources(pid: int, cost: Dictionary) -> void:
+		for r in cost:
+			players[pid].resources[r] -= cost[r]
+	func _give_setup_resources(vertex_id: int) -> void:
+		var pid := current_player
+		var v: Vertex = vertices[vertex_id]
+		for hex_id in v.adjacent_hex_indices:
+			var hex: Hex = hexes[hex_id]
+			if hex.resource != "desert":
+				players[pid].resources[hex.resource] += 1
+	# ---------------------------------------------------------------------------
+
+	# ---------------------------------------------------------------------------
+	# LONGEST ROAD / LARGEST ARMY
+	# ---------------------------------------------------------------------------
+
+	func _check_longest_road() -> void:
+		var pid := current_player
+		var length := _compute_longest_road(pid)
+		if length > longest_road_length and length >= 5:
+			# Revoke previous holder
+			if longest_road_player >= 0:
+				players[longest_road_player].has_longest_road = false
+				players[longest_road_player].victory_points -= 2
+			longest_road_player = pid
+			longest_road_length = length
+			players[pid].has_longest_road = true
+			players[pid].victory_points += 2
+	func _compute_longest_road(pid: int) -> int:
+		# Build adjacency of player-owned roads, then DFS for longest path.
+		# Simplified: return count of roads as upper bound.
+		# A proper implementation would do DFS on the road graph.
+		var max_length := 0
+		var player_road_ends: Dictionary = {}  # vertex_id -> list of connected road vertex_ids
+		for r in roads:
+			if r.owner_id == pid:
+				if not player_road_ends.has(r.vertex_a_id):
+					player_road_ends[r.vertex_a_id] = []
+				if not player_road_ends.has(r.vertex_b_id):
+					player_road_ends[r.vertex_b_id] = []
+				player_road_ends[r.vertex_a_id].append(r.vertex_b_id)
+				player_road_ends[r.vertex_b_id].append(r.vertex_a_id)
+		
+		for start_vid in player_road_ends:
+			max_length = max(max_length, _dfs_longest_road(player_road_ends, start_vid, {}))
+		return max_length
+		
+		
+	func _dfs_longest_road(adj: Dictionary, current: int, visited_edges: Dictionary) -> int:
+		var best := 0
+		if not adj.has(current):
+			return 0
+		for next_vid in adj[current]:
+			var edge_key := _edge_key(current, next_vid)
+			if visited_edges.has(edge_key):
+				continue
+			var new_visited = visited_edges.duplicate()
+			new_visited[edge_key] = true
+			best = max(best, 1 + _dfs_longest_road(adj, next_vid, new_visited))
+		return best
+		
+		
+	func _edge_key(a: int, b: int) -> int:
+		if a < b:
+			return a * 1000 + b
+		return b * 1000 + a
+	func _check_largest_army() -> void:
+		var pid := current_player
+		if players[pid].knights_played > largest_army_size and players[pid].knights_played >= 3:
+			if largest_army_player >= 0:
+				players[largest_army_player].has_largest_army = false
+				players[largest_army_player].victory_points -= 2
+			largest_army_player = pid
+			largest_army_size = players[pid].knights_played
+			players[pid].has_largest_army = true
+			players[pid].victory_points += 2
+	# ---------------------------------------------------------------------------
 ## Move: encodes any single action a player can take.
 ##
 ## This is the return type of search(). Exactly one field should be set;
@@ -729,47 +1027,47 @@ func search(pos: BoardPosition) -> Move:
 	return move_list.pick_random()
 
 
-## Apply a move to a board position, returning a new (or mutated) position.
+## Apply a move to a board position, returning a new position.
 ## The engine uses this internally for look-ahead; the game can also use
 ## it to apply the returned move.
 func apply_move(pos: BoardPosition, move: Move) -> BoardPosition:
-	# For now, mutate in place. A full engine would deep-copy for search.
 	var new_board = pos.clone()
-	
-	match move.type:
-		Move.Type.SETTLEMENT:
-			_apply_settlement(new_board, move.vertex_id)
-		Move.Type.ROAD:
-			_apply_road(new_board, move.road_id)
-		Move.Type.BUILD_SETTLEMENT:
-			_apply_build_settlement(new_board, move.vertex_id)
-		Move.Type.BUILD_CITY:
-			_apply_build_city(new_board, move.vertex_id)
-		Move.Type.BUILD_ROAD:
-			_apply_build_road(new_board, move.road_id)
-		Move.Type.BUY_DEV_CARD:
-			_apply_buy_dev_card(new_board)
-		Move.Type.PLAY_KNIGHT:
-			_apply_play_knight(new_board)
-		Move.Type.PLAY_MONOPOLY:
-			_apply_play_monopoly(new_board, move.monopoly_resource)
-		Move.Type.PLAY_YEAR_OF_PLENTY:
-			_apply_play_year_of_plenty(new_board, move.yop_resource_1, move.yop_resource_2)
-		Move.Type.PLAY_ROAD_BUILDING:
-			_apply_play_road_building(new_board)
-		Move.Type.TRADE_BANK:
-			_apply_trade_bank(new_board, move.bank_give, move.bank_receive, move.bank_give_amount)
-		Move.Type.TRADE_PLAYER:
-			_apply_trade_player(new_board, move.trade_target_player, move.trade_give, move.trade_receive)
-		Move.Type.MOVE_ROBBER:
-			_apply_move_robber(new_board, move.robber_hex_id, move.robber_steal_target)
-		Move.Type.DISCARD:
-			_apply_discard(new_board, move.discard_resources)
-		Move.Type.END_TURN:
-			_apply_end_turn(new_board)
-	
+	_apply_move_to_board(new_board, move)
 	return new_board
 
+
+func _apply_move_to_board(b: BoardPosition, move: Move) -> void:
+	match move.type:
+		Move.Type.SETTLEMENT:
+			b._apply_settlement(move.vertex_id)
+		Move.Type.ROAD:
+			b._apply_road(move.road_id)
+		Move.Type.BUILD_SETTLEMENT:
+			b._apply_build_settlement(move.vertex_id)
+		Move.Type.BUILD_CITY:
+			b._apply_build_city(move.vertex_id)
+		Move.Type.BUILD_ROAD:
+			b._apply_build_road(move.road_id)
+		Move.Type.BUY_DEV_CARD:
+			b._apply_buy_dev_card()
+		Move.Type.PLAY_KNIGHT:
+			b._apply_play_knight()
+		Move.Type.PLAY_MONOPOLY:
+			b._apply_play_monopoly(move.monopoly_resource)
+		Move.Type.PLAY_YEAR_OF_PLENTY:
+			b._apply_play_year_of_plenty(move.yop_resource_1, move.yop_resource_2)
+		Move.Type.PLAY_ROAD_BUILDING:
+			b._apply_play_road_building()
+		Move.Type.TRADE_BANK:
+			b._apply_trade_bank(move.bank_give, move.bank_receive, move.bank_give_amount)
+		Move.Type.TRADE_PLAYER:
+			b._apply_trade_player(move.trade_target_player, move.trade_give, move.trade_receive)
+		Move.Type.MOVE_ROBBER:
+			b._apply_move_robber(move.robber_hex_id, move.robber_steal_target)
+		Move.Type.DISCARD:
+			b._apply_discard(move.discard_resources)
+		Move.Type.END_TURN:
+			b._apply_end_turn()
 
 # ---------------------------------------------------------------------------
 # BOARD TOPOLOGY INITIALIZATION
@@ -887,356 +1185,6 @@ func _road_key(a: Vector2i, b: Vector2i) -> String:
 		ay = by
 		by = tmp
 	return "%d_%d_%d_%d" % [ax, ay, bx, by]
-
-# ---------------------------------------------------------------------------
-# MOVE APPLICATION
-# ---------------------------------------------------------------------------
-
-func _apply_settlement(pos: BoardPosition, vertex_id: int) -> void:
-	var v: Vertex = pos.vertices[vertex_id]
-	var pid := pos.current_player
-	v.owner_id = pid
-	v.is_city = false
-	pos.players[pid].settlements_built += 1
-	pos.players[pid].victory_points += SETTLEMENT_VICTORY_POINTS
-	pos.setup_last_vertex_id = vertex_id
-	# In setup backward, give resources from adjacent hexes
-	if pos.phase == Phase.SETUP_BACKWARD:
-		_give_setup_resources(pos, vertex_id)
-
-
-func _apply_road(pos: BoardPosition, road_id: int) -> void:
-	var r: Road = pos.roads[road_id]
-	var pid := pos.current_player
-	r.owner_id = pid
-	pos.players[pid].roads_built += 1
-	pos.setup_last_vertex_id = -1
-	pos.setup_placements += 1
-
-	# Advance setup phase
-	var total_setup_steps: int = pos.num_players * 2
-	if pos.setup_placements >= total_setup_steps:
-		pos.phase = Phase.MAIN
-	elif pos.setup_placements >= pos.num_players:
-		pos.phase = Phase.SETUP_BACKWARD
-	else:
-		pos.phase = Phase.SETUP_FORWARD
-
-	# Advance to next player
-	if pos.setup_placements < pos.num_players:
-		pos.current_player = pos.setup_placements
-	else:
-		pos.current_player = pos.num_players - 1 - (pos.setup_placements - pos.num_players)
-
-
-func _apply_build_settlement(pos: BoardPosition, vertex_id: int) -> void:
-	var pid := pos.current_player
-	_pay_resources(pos, pid, SETTLEMENT_COST)
-	var v: Vertex = pos.vertices[vertex_id]
-	v.owner_id = pid
-	v.is_city = false
-	pos.players[pid].settlements_built += 1
-	pos.players[pid].victory_points += SETTLEMENT_VICTORY_POINTS
-
-
-func _apply_build_city(pos: BoardPosition, vertex_id: int) -> void:
-	var pid := pos.current_player
-	_pay_resources(pos, pid, CITY_COST)
-	var v: Vertex = pos.vertices[vertex_id]
-	v.is_city = true
-	pos.players[pid].settlements_built -= 1
-	pos.players[pid].cities_built += 1
-	pos.players[pid].victory_points += 1  # City gives +2 total, settlement already gave +1
-
-
-func _apply_build_road(pos: BoardPosition, road_id: int) -> void:
-	var pid := pos.current_player
-	_pay_resources(pos, pid, ROAD_COST)
-	var r: Road = pos.roads[road_id]
-	r.owner_id = pid
-	pos.players[pid].roads_built += 1
-	_check_longest_road(pos)
-
-
-func _apply_buy_dev_card(pos: BoardPosition) -> void:
-	var pid := pos.current_player
-	_pay_resources(pos, pid, DEV_CARD_COST)
-	# Draw a card (simplified — in full engine, track deck composition)
-	pos.players[pid].new_dev_cards[DevCard.KNIGHT] += 1  # Placeholder
-	pos.dev_deck_remaining -= 1
-
-
-func _apply_play_knight(pos: BoardPosition) -> void:
-	var pid := pos.current_player
-	pos.players[pid].dev_cards[DevCard.KNIGHT] -= 1
-	pos.players[pid].knights_played += 1
-	_check_largest_army(pos)
-	# Knight triggers robber phase — current player must move robber
-	pos.robber_player = pid
-	pos.phase = Phase.ROBBER
-
-
-func _apply_play_monopoly(pos: BoardPosition, resource: String) -> void:
-	var pid := pos.current_player
-	pos.players[pid].dev_cards[DevCard.MONOPOLY] -= 1
-	var total_taken := 0
-	for i in range(pos.num_players):
-		if i == pid:
-			continue
-		var amount: int = pos.players[i].resources[resource]
-		pos.players[i].resources[resource] -= amount
-		total_taken += amount
-	pos.players[pid].resources[resource] += total_taken
-
-
-func _apply_play_year_of_plenty(pos: BoardPosition, res1: String, res2: String) -> void:
-	var pid := pos.current_player
-	pos.players[pid].dev_cards[DevCard.YEAR_OF_PLENTY] -= 1
-	pos.players[pid].resources[res1] += 1
-	pos.players[pid].resources[res2] += 1
-
-
-func _apply_play_road_building(pos: BoardPosition) -> void:
-	var pid := pos.current_player
-	pos.players[pid].dev_cards[DevCard.ROAD_BUILDING] -= 1
-	pos.free_roads_remaining = 2
-	pos.phase = Phase.ROAD_BUILDING
-
-
-func _apply_trade_bank(pos: BoardPosition, give: String, receive: String, give_amount: int) -> void:
-	var pid := pos.current_player
-	pos.players[pid].resources[give] -= give_amount
-	pos.players[pid].resources[receive] += 1
-
-
-func _apply_trade_player(pos: BoardPosition, target: int, give: Dictionary, receive: Dictionary) -> void:
-	var pid := pos.current_player
-	for r in give:
-		pos.players[pid].resources[r] -= give[r]
-		pos.players[target].resources[r] += give[r]
-	for r in receive:
-		pos.players[pid].resources[r] += receive[r]
-		pos.players[target].resources[r] -= receive[r]
-
-
-func _apply_move_robber(pos: BoardPosition, hex_id: int, steal_target: int) -> void:
-	# Remove robber from current hex
-	for h in pos.hexes:
-		h.has_robber = false
-	pos.hexes[hex_id].has_robber = true
-
-	if steal_target >= 0 and pos.players[steal_target].total_resources() > 0:
-		# Steal a random resource (simplified — pick first available)
-		for r in RESOURCE_TYPES:
-			if pos.players[steal_target].resources[r] > 0:
-				pos.players[steal_target].resources[r] -= 1
-				pos.players[pos.current_player].resources[r] += 1
-				break
-
-	# Clear the robber tracker — robber has been placed
-	pos.robber_player = -1
-
-	# Return to main phase (or road building if that was interrupted)
-	if pos.free_roads_remaining > 0:
-		pos.phase = Phase.ROAD_BUILDING
-	else:
-		pos.phase = Phase.MAIN
-
-
-func _apply_discard(pos: BoardPosition, discard: Dictionary) -> void:
-	var pid := pos.current_player
-	for r in discard:
-		pos.players[pid].resources[r] -= discard[r]
-	pos.players_to_discard[pid] = false
-
-	# Check if all players have discarded
-	var all_done := true
-	for i in range(pos.num_players):
-		if pos.players_to_discard[i]:
-			all_done = false
-			# Move to next player who needs to discard
-			pos.current_player = i
-			break
-	if all_done:
-		pos.phase = Phase.ROBBER
-		pos.current_player = pos.robber_player  # Return control to the roller
-
-
-func _apply_end_turn(pos: BoardPosition) -> void:
-	# Merge new dev cards into playable hand
-	var pid := pos.current_player
-	for k in pos.players[pid].new_dev_cards:
-		pos.players[pid].dev_cards[k] += pos.players[pid].new_dev_cards[k]
-		pos.players[pid].new_dev_cards[k] = 0
-
-	# Advance to next player
-	pos.current_player = (pos.current_player + 1) % pos.num_players
-	if pos.current_player == 0:
-		pos.turn_number += 1
-
-	# Roll dice for the new player
-	var roll: int = _roll_dice()
-	pos.last_dice_roll = roll
-
-	if roll == 7:
-		# 7 triggers discard phase first.
-		# pos.current_player is the player who just rolled — remember them.
-		pos.robber_player = pos.current_player
-		_initiate_discard_phase(pos)
-		# If no one actually needs to discard, go straight to robber
-		var any_discard := false
-		for i in range(pos.num_players):
-			if pos.players_to_discard[i]:
-				any_discard = true
-				break
-		if not any_discard:
-			pos.phase = Phase.ROBBER
-			pos.current_player = pos.robber_player
-	else:
-		# Distribute resources
-		_distribute_resources(pos, roll)
-		pos.phase = Phase.MAIN
-
-
-func _roll_dice() -> int:
-	# Roll two six-sided dice and return the sum.
-	return randi_range(1, 6) + randi_range(1, 6)
-
-
-func _distribute_resources(pos: BoardPosition, roll: int) -> void:
-	# For every hex matching the roll number that does NOT have the robber,
-	# give 1 resource per adjacent settlement (2 per city) of the hex type
-	# to the owning player.
-	for hex in pos.hexes:
-		if hex.token != roll:
-			continue
-		if hex.has_robber:
-			continue
-		if hex.resource == "desert":
-			continue
-		# Find all vertices adjacent to this hex
-		for vid in _hex_vertex_ids(hex):
-			var v: Vertex = pos.vertices[vid]
-			if not v.is_built():
-				continue
-			var amount: int = 2 if v.is_city else 1
-			pos.players[v.owner_id].resources[hex.resource] += amount
-
-
-func _initiate_discard_phase(pos: BoardPosition) -> void:
-	# Mark every player with more than 7 cards as needing to discard.
-	# The discard phase starts with the first such player (lowest index).
-	for i in range(pos.num_players):
-		pos.players_to_discard[i] = pos.players[i].total_resources() > 7
-	# Find the first player who needs to discard
-	for i in range(pos.num_players):
-		if pos.players_to_discard[i]:
-			pos.current_player = i
-			break
-	pos.phase = Phase.DISCARD
-
-
-# ---------------------------------------------------------------------------
-# VALIDATION HELPERS
-# ---------------------------------------------------------------------------
-
-
-
-
-# ---------------------------------------------------------------------------
-# RESOURCE / ECONOMY HELPERS
-# ---------------------------------------------------------------------------
-
-func _pay_resources(pos: BoardPosition, pid: int, cost: Dictionary) -> void:
-	for r in cost:
-		pos.players[pid].resources[r] -= cost[r]
-
-
-func _give_setup_resources(pos: BoardPosition, vertex_id: int) -> void:
-	var pid := pos.current_player
-	var v: Vertex = pos.vertices[vertex_id]
-	for hex_id in v.adjacent_hex_indices:
-		var hex: Hex = pos.hexes[hex_id]
-		if hex.resource != "desert":
-			pos.players[pid].resources[hex.resource] += 1
-
-
-# ---------------------------------------------------------------------------
-# LONGEST ROAD / LARGEST ARMY
-# ---------------------------------------------------------------------------
-
-func _check_longest_road(pos: BoardPosition) -> void:
-	var pid := pos.current_player
-	var length := _compute_longest_road(pos, pid)
-	if length > pos.longest_road_length and length >= 5:
-		# Revoke previous holder
-		if pos.longest_road_player >= 0:
-			pos.players[pos.longest_road_player].has_longest_road = false
-			pos.players[pos.longest_road_player].victory_points -= 2
-		pos.longest_road_player = pid
-		pos.longest_road_length = length
-		pos.players[pid].has_longest_road = true
-		pos.players[pid].victory_points += 2
-
-
-func _compute_longest_road(pos: BoardPosition, pid: int) -> int:
-	# Build adjacency of player-owned roads, then DFS for longest path.
-	# Simplified: return count of roads as upper bound.
-	# A proper implementation would do DFS on the road graph.
-	var max_length := 0
-	var player_road_ends: Dictionary = {}  # vertex_id -> list of connected road vertex_ids
-	for r in pos.roads:
-		if r.owner_id == pid:
-			if not player_road_ends.has(r.vertex_a_id):
-				player_road_ends[r.vertex_a_id] = []
-			if not player_road_ends.has(r.vertex_b_id):
-				player_road_ends[r.vertex_b_id] = []
-			player_road_ends[r.vertex_a_id].append(r.vertex_b_id)
-			player_road_ends[r.vertex_b_id].append(r.vertex_a_id)
-
-	for start_vid in player_road_ends:
-		max_length = max(max_length, _dfs_longest_road(player_road_ends, start_vid, {}))
-	return max_length
-
-
-func _dfs_longest_road(adj: Dictionary, current: int, visited_edges: Dictionary) -> int:
-	var best := 0
-	if not adj.has(current):
-		return 0
-	for next_vid in adj[current]:
-		var edge_key := _edge_key(current, next_vid)
-		if visited_edges.has(edge_key):
-			continue
-		var new_visited = visited_edges.duplicate()
-		new_visited[edge_key] = true
-		best = max(best, 1 + _dfs_longest_road(adj, next_vid, new_visited))
-	return best
-
-
-func _edge_key(a: int, b: int) -> int:
-	if a < b:
-		return a * 1000 + b
-	return b * 1000 + a
-
-
-func _check_largest_army(pos: BoardPosition) -> void:
-	var pid := pos.current_player
-	if pos.players[pid].knights_played > pos.largest_army_size and pos.players[pid].knights_played >= 3:
-		if pos.largest_army_player >= 0:
-			pos.players[pos.largest_army_player].has_largest_army = false
-			pos.players[pos.largest_army_player].victory_points -= 2
-		pos.largest_army_player = pid
-		pos.largest_army_size = pos.players[pid].knights_played
-		pos.players[pid].has_largest_army = true
-		pos.players[pid].victory_points += 2
-
-
-# ---------------------------------------------------------------------------
-# HEX / VERTEX LOOKUPS
-# ---------------------------------------------------------------------------
-
-
-
 
 # ---------------------------------------------------------------------------
 # UTILITY
