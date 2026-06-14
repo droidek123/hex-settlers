@@ -13,6 +13,9 @@ const HEX_COUNT: int = 19
 const VERTEX_COUNT: int = 54
 const ROAD_COUNT: int = 72
 
+# Hex size for pixel-space calculations (must match game.gd)
+const HEX_SIZE: float = 42.0
+
 const MAX_PLAYERS: int = 4
 const INITIAL_SETTLEMENTS: int = 2
 const INITIAL_ROADS: int = 2
@@ -1104,10 +1107,36 @@ func _initialize_board_topology(board_position: BoardPosition) -> void:
 
 	assert(b.hexes.size() == HEX_COUNT, "Expected %d hexes, got %d" % [HEX_COUNT, b.hexes.size()])
 
+	# --- Resources and Tokens ---
+	# Build a shuffled resource bag from HEX_RESOURCE_COUNTS
+	var resource_bag: Array[String] = []
+	for res in HEX_RESOURCE_COUNTS:
+		for _i in range(HEX_RESOURCE_COUNTS[res]):
+			resource_bag.append(res)
+	resource_bag.shuffle()
+
+	# Build a shuffled token bag from TOKEN_COUNTS
+	var token_bag: Array[int] = []
+	for tok in TOKEN_COUNTS:
+		for _i in range(TOKEN_COUNTS[tok]):
+			token_bag.append(tok)
+	token_bag.shuffle()
+
+	# Assign resources and tokens to hexes
+	for i in range(b.hexes.size()):
+		var res: String = resource_bag[i]
+		b.hexes[i].resource = res
+		if res == "desert":
+			b.hexes[i].token = 0
+			b.hexes[i].has_robber = true  # Robber starts on desert
+		else:
+			b.hexes[i].token = token_bag.pop_front()
+
 	# --- Vertices and Roads ---
-	# We discover vertices and roads by walking hex corners and edges.
+	# We discover vertices and roads by walking hex corners in pixel space.
 	# Each hex has 6 corners; each corner is shared by up to 3 hexes.
-	# We use a canonical key (axial-based) to deduplicate.
+	# We use pixel-space positions (rounded to ints) as keys for deduplication,
+	# matching the approach used in game.gd.
 
 	var vertex_key_to_id: Dictionary = {}
 	var road_key_to_id: Dictionary = {}
@@ -1115,21 +1144,33 @@ func _initialize_board_topology(board_position: BoardPosition) -> void:
 
 	for hex_id in range(b.hexes.size()):
 		var hex := b.hexes[hex_id]
-		var corners: Array[Vector2i] = _hex_corners(hex.axial_q, hex.axial_r)
-		for ci in range(6):
-			var key: Vector2i = corners[ci]
-			if not vertex_key_to_id.has(key):
+		var hex_pixel_pos: Vector2 = _axial_to_pixel(hex.axial_q, hex.axial_r)
+		# Pre-compute all 6 corner keys for this hex
+		var corner_keys: Array[String] = []
+		for i in range(6):
+			var angle: float = deg_to_rad(60 * i)
+			var corner_pos: Vector2 = hex_pixel_pos + Vector2(cos(angle), sin(angle)) * HEX_SIZE
+			corner_keys.append(_pixel_key(corner_pos))
+
+		# Create vertices (first pass)
+		var corner_vids: Array[int] = []
+		for i in range(6):
+			var vkey: String = corner_keys[i]
+			if not vertex_key_to_id.has(vkey):
 				var vid: int = vertex_key_to_id.size()
-				vertex_key_to_id[key] = vid
+				vertex_key_to_id[vkey] = vid
 				var v := Vertex.new(vid)
 				b.vertices.append(v)
 				vertex_adj_hex[vid] = []
-			var vid: int = vertex_key_to_id[key]
+			var vid: int = vertex_key_to_id[vkey]
+			corner_vids.append(vid)
 			vertex_adj_hex[vid].append(hex_id)
 
-			# Edge to next corner
-			var next_key: Vector2i = corners[(ci + 1) % 6]
-			var rk: String = _road_key(key, next_key)
+		# Create roads (second pass)
+		for i in range(6):
+			var vkey: String = corner_keys[i]
+			var next_vkey: String = corner_keys[(i + 1) % 6]
+			var rk: String = _road_key_from_vertex_keys(vkey, next_vkey)
 			if not road_key_to_id.has(rk):
 				var rid: int = road_key_to_id.size()
 				road_key_to_id[rk] = rid
@@ -1137,13 +1178,15 @@ func _initialize_board_topology(board_position: BoardPosition) -> void:
 			var rid: int = road_key_to_id[rk]
 			var road: Road = b.roads[rid]
 			if road.vertex_a_id == -1:
-				road.vertex_a_id = vid
-			elif road.vertex_b_id == -1:
-				road.vertex_b_id = vid
+				road.vertex_a_id = corner_vids[i]
+				road.vertex_b_id = corner_vids[(i + 1) % 6]
 
 	# Fill in vertex adjacent hex indices
 	for vid in range(b.vertices.size()):
-		b.vertices[vid].adjacent_hex_indices = vertex_adj_hex[vid]
+		var arr: Array[int] = []
+		for hex_id in vertex_adj_hex[vid]:
+			arr.append(hex_id)
+		b.vertices[vid].adjacent_hex_indices = arr
 
 	assert(b.vertices.size() == VERTEX_COUNT, "Expected %d vertices, got %d" % [VERTEX_COUNT, b.vertices.size()])
 	assert(b.roads.size() == ROAD_COUNT, "Expected %d roads, got %d" % [ROAD_COUNT, b.roads.size()])
@@ -1152,39 +1195,25 @@ func _initialize_board_topology(board_position: BoardPosition) -> void:
 	b.dev_deck_remaining = DECK_TOTAL
 
 
-## Return the 6 corner axial-offset coordinates for a hex.
-## We use doubled coordinates to stay integer: corners are at
-## (q, r) + offset where offsets are the 6 directions at distance 1
-## in cube-coordinate space, mapped back to a 2D integer key.
-func _hex_corners(q: int, r: int) -> Array[Vector2i]:
-	# Cube coordinates: x=q, z=r, y=-x-z
-	# 6 corner directions in cube coords (x, y, z):
-	var dirs = [
-		Vector3i(1, -1, 0), Vector3i(1, 0, -1), Vector3i(0, 1, -1),
-		Vector3i(-1, 1, 0), Vector3i(-1, 0, 1), Vector3i(0, -1, 1)
-	]
-	var corners: Array[Vector2i] = []
-	for d in dirs:
-		# Corner in cube: (x+d.x, y+d.y, z+d.z)
-		# Map back to axial: q_c = x_c, r_c = z_c
-		corners.append(Vector2i(q + d.x, r + d.z))
-	return corners
+## Convert axial hex coordinates to pixel-space position.
+## Matches game.gd's axial_to_world (without board_offset).
+func _axial_to_pixel(q: int, r: int) -> Vector2:
+	var x: float = HEX_SIZE * (3.0 / 2.0 * q)
+	var y: float = HEX_SIZE * (sqrt(3) / 2.0 * q + sqrt(3) * r)
+	return Vector2(x, y)
 
 
-func _road_key(a: Vector2i, b: Vector2i) -> String:
-	# Canonical ordering
-	var ax: int = a.x
-	var ay: int = a.y
-	var bx: int = b.x
-	var by: int = b.y
-	if ax > bx or (ax == bx and ay > by):
-		var tmp := ax
-		ax = bx
-		bx = tmp
-		tmp = ay
-		ay = by
-		by = tmp
-	return "%d_%d_%d_%d" % [ax, ay, bx, by]
+## Generate a deduplication key from a pixel-space position.
+## Matches game.gd's get_vertex_key.
+func _pixel_key(pos: Vector2) -> String:
+	return "%d_%d" % [int(round(pos.x)), int(round(pos.y))]
+
+
+## Generate a canonical road key from two vertex keys.
+func _road_key_from_vertex_keys(ka: String, kb: String) -> String:
+	if ka > kb:
+		return kb + "_" + ka
+	return ka + "_" + kb
 
 # ---------------------------------------------------------------------------
 # UTILITY

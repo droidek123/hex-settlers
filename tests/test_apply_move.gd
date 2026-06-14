@@ -268,9 +268,10 @@ func test_setup_road_completes_setup() -> void:
 		var mr := _move(CatanEngine.Move.Type.ROAD)
 		mr.road_id = rid
 		pos = _engine.apply_move(pos, mr)
-	# After all 8 placements, setup should be complete
+	# After 4 setup roads (2 players x 2 rounds), setup should be complete
+	# Note: setup_placements counts roads only, not settlements
 	_assert_eq(pos.phase, CatanEngine.Phase.MAIN, "setup complete: phase is MAIN")
-	_assert_eq(pos.setup_placements, 8, "setup complete: 8 placements done")
+	_assert_eq(pos.setup_placements, 4, "setup complete: 4 setup roads placed")
 
 
 # ---------------------------------------------------------------------------
