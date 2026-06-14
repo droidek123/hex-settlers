@@ -91,6 +91,12 @@ class Hex:
 		return "Hex(%d,%d %s %d%s)" % [axial_q, axial_r, resource, token,
 			" ROBBER" if has_robber else ""]
 
+	func clone() -> Hex:
+		var c := Hex.new(axial_q, axial_r, resource, token)
+		c.id = id
+		c.has_robber = has_robber
+		return c
+
 
 ## Vertex: a corner where settlements / cities are placed.
 class Vertex:
@@ -110,6 +116,14 @@ class Vertex:
 		if owner_id < 0:
 			return "Vertex(%d empty)" % id
 		return "Vertex(%d P%d %s)" % [id, owner_id, "city" if is_city else "settlement"]
+
+	func clone() -> Vertex:
+		var c := Vertex.new(id)
+		c.owner_id = owner_id
+		c.is_city = is_city
+		c.adjacent_hex_indices = adjacent_hex_indices.duplicate()
+		c.port = port
+		return c
 
 
 ## Road: an edge between two vertices.
@@ -131,6 +145,11 @@ class Road:
 		if owner_id < 0:
 			return "Road(%d empty)" % id
 		return "Road(%d P%d %d-%d)" % [id, owner_id, vertex_a_id, vertex_b_id]
+
+	func clone() -> Road:
+		var c := Road.new(id, vertex_a_id, vertex_b_id)
+		c.owner_id = owner_id
+		return c
 
 
 ## PlayerState: everything about one player.
@@ -180,6 +199,23 @@ class PlayerState:
 
 	func _to_string() -> String:
 		return "State" # Not needed, but keeps class well-formed
+
+	func clone() -> PlayerState:
+		var c := PlayerState.new()
+		for r in resources:
+			c.resources[r] = resources[r]
+		c.settlements_built = settlements_built
+		c.cities_built = cities_built
+		c.roads_built = roads_built
+		c.victory_points = victory_points
+		c.knights_played = knights_played
+		c.has_longest_road = has_longest_road
+		c.has_largest_army = has_largest_army
+		for k in dev_cards:
+			c.dev_cards[k] = dev_cards[k]
+		for k in new_dev_cards:
+			c.new_dev_cards[k] = new_dev_cards[k]
+		return c
 
 
 ## BoardPosition: complete snapshot of the game state.
@@ -238,29 +274,38 @@ class BoardPosition:
 		dupl.current_player = current_player
 		dupl.phase = phase
 		dupl.turn_number = turn_number
-		
-		#look into cloning
-		dupl.hexes = hexes
-		dupl.vertices = vertices
-		dupl.roads = roads
 
-		dupl.players = players
+		dupl.hexes.resize(hexes.size())
+		for i in range(hexes.size()):
+			dupl.hexes[i] = hexes[i].clone()
+
+		dupl.vertices.resize(vertices.size())
+		for i in range(vertices.size()):
+			dupl.vertices[i] = vertices[i].clone()
+
+		dupl.roads.resize(roads.size())
+		for i in range(roads.size()):
+			dupl.roads[i] = roads[i].clone()
+
+		dupl.players.resize(players.size())
+		for i in range(players.size()):
+			dupl.players[i] = players[i].clone()
 
 		dupl.dev_deck_remaining = dev_deck_remaining
-		
+
 		dupl.setup_placements = setup_placements
 		dupl.setup_last_vertex_id = setup_last_vertex_id
-		
+
 		dupl.free_roads_remaining = free_roads_remaining
 
-		dupl.players_to_discard = players_to_discard
+		dupl.players_to_discard = players_to_discard.duplicate()
 
 		dupl.largest_army_player = largest_army_player
 		dupl.largest_army_size = largest_army_size
 
 		dupl.longest_road_player = longest_road_player
 		dupl.longest_road_length = longest_road_length
-				
+
 		return dupl
 	
 	func generate_moves() -> Array[Move]:
@@ -383,7 +428,7 @@ class BoardPosition:
 			if _is_valid_road_placement(r.id):
 				var move := Move.new(Move.Type.BUILD_ROAD)
 				move.road_id = r.id
-				move_list.append(move_list)
+				move_list.append(move)
 		return move_list
 
 	func _choose_discard(p: PlayerState, count: int) -> Dictionary:
