@@ -125,6 +125,8 @@ var robber_hex_info = null
 var robber_marker: Node2D
 var waiting_for_robber := false
 
+#silnik
+var engine: CatanEngine
 
 func _ready():
 	DisplayServer.window_set_size(Vector2i(1400, 900))
@@ -192,6 +194,7 @@ func start_game(count: int):
 	generate_vertices()
 	generate_roads()
 	create_robber_marker()
+	engine = CatanEngine.new()
 
 	update_turn_ui()
 	update_resources_ui()
@@ -352,6 +355,9 @@ func update_turn_ui():
 
 	turn_label.modulate = get_current_player_color()
 
+	#test
+	var bp = engine.from_game_state(self)
+	engine.search(bp)
 
 func update_resources_ui():
 	var left_text := ""
