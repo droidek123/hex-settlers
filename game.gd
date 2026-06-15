@@ -131,7 +131,7 @@ var waiting_for_robber := false
 #silnik
 var engine: CatanEngine
 var cpu_thinking := false
-var cpu_action_delay := 0.01
+var cpu_action_delay := 0.2
 
 func _ready():
 	randomize()
@@ -374,7 +374,9 @@ func update_turn_ui():
 		turn_label.text = "Tura: " + get_current_player_name()
 
 	if is_current_player_cpu():
-		turn_label.text += " [CPU]"
+		# enum to string
+		var personality = CatanEngine.Personality.keys()[player_data[current_player_index].personality] 
+		turn_label.text += " [CPU," + personality + "]"
 
 	turn_label.modulate = get_current_player_color()
 
@@ -1516,7 +1518,7 @@ func run_cpu_turn_if_needed():
 
 	cpu_thinking = true
 
-	await get_tree().create_timer(cpu_action_delay).timeout
+	await get_tree().create_timer(0.001).timeout
 
 	if game_over:
 		cpu_thinking = false
@@ -1529,7 +1531,7 @@ func run_cpu_turn_if_needed():
 	if not setup_phase and not waiting_for_robber and not has_rolled_this_turn:
 		show_message(get_current_player_name() + " CPU rzuca kostką")
 		roll_dice()
-		await get_tree().create_timer(cpu_action_delay).timeout
+		await get_tree().create_timer(0.001).timeout
 		
 		if game_over:
 			cpu_thinking = false

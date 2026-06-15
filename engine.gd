@@ -57,7 +57,7 @@ enum Personality {
 }
 
 func get_random_personality():
-	return Personality.RANDOM;
+	return Personality.values().pick_random()
 
 
 enum Phase {
@@ -1045,6 +1045,8 @@ func search(pos: BoardPosition, time: float, personality: Personality) -> Move:
 			return Move.new(Move.Type.END_TURN)
 
 		return move_list.pick_random()
+	elif personality == Personality.MCTS:
+		return mcts_search(pos, time)
 	else:
 		return null
 
@@ -1131,6 +1133,137 @@ func evaluate(pos: BoardPosition) -> Array[float]:
 		scores[pid] = score
 
 	return scores
+
+
+# ---------------------------------------------------------------------------
+# MONTE CARLO TREE SEARCH
+# ---------------------------------------------------------------------------
+
+## A node in the MCTS tree. Stores the position, the move that led here,
+## child nodes, visitation statistics, and remaining untried moves.
+class MCTSNode:
+	var state: BoardPosition
+	var parent: MCTSNode
+	var move: Move
+	var children: Array[MCTSNode] = []
+	var untried_moves: Array[Move] = []
+	var visits: int = 0
+	var value_sums: Array[float] = []  # cumulative value per player
+
+	func _init(s: BoardPosition, p: MCTSNode, m: Move) -> void:
+		state = s
+		parent = p
+		move = m
+		untried_moves = s.generate_moves()
+		value_sums.resize(s.num_players)
+		for i in range(s.num_players):
+			value_sums[i] = 0.0
+
+	## UCB1 score from the perspective of player `pid`.
+	## Returns +INF for unvisited children.
+	func ucb_score(pid: int, exploration: float) -> float:
+		if visits == 0:
+			return INF
+		var q: float = value_sums[pid] / float(visits)
+		var log_n: float = log(float(parent.visits)) if parent != null else 1.0
+		var explore: float = exploration * sqrt(log_n / float(visits))
+		return q + explore
+
+	## Pick the child with the best UCB score from the perspective of the
+	## player whose turn it is at this node.
+	func select_child(exploration: float) -> MCTSNode:
+		var pid := state.current_player
+		var best: MCTSNode = null
+		var best_score: float = -INF
+		for child in children:
+			var score := child.ucb_score(pid, exploration)
+			if score > best_score:
+				best_score = score
+				best = child
+		return best
+
+	## Expand one untried move, returning the new child node.
+	func expand(engine: CatanEngine) -> MCTSNode:
+		var m: Move = untried_moves.pop_back()
+		var new_state := engine.apply_move(state, m)
+		var child := MCTSNode.new(new_state, self, m)
+		children.append(child)
+		return child
+
+	func is_fully_expanded() -> bool:
+		return untried_moves.is_empty()
+
+
+## Run MCTS from the given root position within the time budget.
+## Uses PUCT (uniform prior) for node selection and evaluate() at leaves.
+func mcts_search(root_state: BoardPosition, time_limit: float) -> Move:
+	var root := MCTSNode.new(root_state, null, null)
+	var start_usec := Time.get_ticks_usec()
+	var limit_usec := int(time_limit * 1_000_000)
+	var iterations := 0
+	const EXPLORATION := sqrt(2.0)
+
+	while true:
+		var elapsed := Time.get_ticks_usec() - start_usec
+		if elapsed >= limit_usec:
+			break
+
+		# --- SELECTION ---
+		var node := root
+		while node.is_fully_expanded():
+			# All moves have been tried at this node; descend using UCB
+			if node.children.is_empty():
+				break  # safety: no children but claimed fully expanded
+			node = node.select_child(EXPLORATION)
+
+		# --- EXPANSION ---
+		if not node.is_fully_expanded():
+			node = node.expand(self)
+
+		# --- EVALUATION (leaf) ---
+		var values := evaluate(node.state)
+
+		# --- BACKPROPAGATION ---
+		while node != null:
+			node.visits += 1
+			for pid in range(node.state.num_players):
+				node.value_sums[pid] += values[pid]
+			node = node.parent
+
+		iterations += 1
+
+	# --- LOGGING ---
+	var elapsed_s: float = (Time.get_ticks_usec() - start_usec) / 1_000_000.0
+	print("MCTS finished: %d iterations in %.3f s" % [iterations, elapsed_s])
+	print("  Root visits: %d, children expanded: %d" % [root.visits, root.children.size()])
+
+	# Sort children by visit count for reporting
+	if root.children.size() > 0:
+		root.children.sort_custom(func(a: MCTSNode, b: MCTSNode) -> bool:
+			return a.visits > b.visits
+		)
+		var top_n := mini(root.children.size(), 5)
+		for i in range(top_n):
+			var c := root.children[i]
+			var avg: float = 0.0
+			if c.visits > 0:
+				avg = c.value_sums[root_state.current_player] / float(c.visits)
+			print("  #%d: %s  (visits=%d  avg=%.3f)" % [i + 1, str(c.move), c.visits, avg])
+
+	# --- FINAL SELECTION (most visited child) ---
+	var best: MCTSNode = null
+	var best_visits := -1
+	for child in root.children:
+		if child.visits > best_visits:
+			best_visits = child.visits
+			best = child
+
+	if best == null:
+		print("  WARNING: no children expanded, returning END_TURN")
+		return Move.new(Move.Type.END_TURN)
+
+	print("  Chosen: %s" % str(best.move))
+	return best.move
 
 
 func apply_move(pos: BoardPosition, move: Move) -> BoardPosition:
