@@ -1226,13 +1226,14 @@ func _road_key_from_vertex_keys(ka: String, kb: String) -> String:
 # UTILITY
 # ---------------------------------------------------------------------------
 
-	## Create a BoardPosition from the current game.gd state.
+## Create a BoardPosition from the current game.gd state.
 ## This is the adapter function the game calls to convert its visual state
 ## into the engine's internal representation before calling search().
 func from_game_state(game_node: Node) -> BoardPosition:
 	var g := game_node
 	var num_players: int = g.player_count
 	var pos := BoardPosition.new(num_players)
+	_initialize_board_topology(pos)
 
 	# --- Hexes: match by axial coordinates ---
 	# game.gd stores hex_infos with axial coords; engine stores hexes by id.
