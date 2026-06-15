@@ -1198,6 +1198,10 @@ func _initialize_board_topology(board_position: BoardPosition) -> void:
 	assert(b.vertices.size() == VERTEX_COUNT, "Expected %d vertices, got %d" % [VERTEX_COUNT, b.vertices.size()])
 	assert(b.roads.size() == ROAD_COUNT, "Expected %d roads, got %d" % [ROAD_COUNT, b.roads.size()])
 
+	# Store key mappings (for integration with game.gd via from_game_state)
+	b.vertex_key_to_id = vertex_key_to_id
+	b.road_key_to_id = road_key_to_id
+
 	# --- Development deck ---
 	b.dev_deck_remaining = DECK_TOTAL
 
