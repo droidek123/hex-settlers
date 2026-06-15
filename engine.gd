@@ -1235,8 +1235,16 @@ func from_game_state(game_node: Node) -> BoardPosition:
 	var pos := BoardPosition.new(num_players)
 	_initialize_board_topology(pos)
 
+	# Board offset: the game uses board_offset in all pixel-space positions,
+	# but the engine computes everything without it. We must account for this
+	# when matching game keys to engine keys.
+	var bo: Vector2 = g.board_offset
+	var bo_x := int(round(bo.x))
+	var bo_y := int(round(bo.y))
+
 	# --- Hexes: match by axial coordinates ---
-	# game.gd stores hex_infos with axial coords; engine stores hexes by id.
+	# game.gd stores hex_infos with pixel positions (including board_offset);
+	# engine stores hexes by id with axial coordinates.
 	# Build a map from (q,r) → engine hex id.
 	var axial_to_hex_id: Dictionary = {}
 	for i in range(pos.hexes.size()):
@@ -1245,59 +1253,72 @@ func from_game_state(game_node: Node) -> BoardPosition:
 
 	# Copy hex resources, tokens, and robber from game.gd hex_infos.
 	for hex_info in g.hex_infos:
-		var hq: int = hex_info["axial_q"] if hex_info.has("axial_q") else _pixel_to_axial_q(hex_info["position"] - g.board_offset)
-		var hr: int = hex_info["axial_r"] if hex_info.has("axial_r") else _pixel_to_axial_r(hex_info["position"] - g.board_offset)
+		var pixel_no_offset: Vector2 = hex_info["position"] - bo
+		var hq: int = _pixel_to_axial_q(pixel_no_offset)
+		var hr: int = _pixel_to_axial_r(pixel_no_offset)
 		var key := "%d_%d" % [hq, hr]
-		if not axial_to_hex_id.has(key):
+		var hid: int = -1
+
+		if axial_to_hex_id.has(key):
+			hid = axial_to_hex_id[key]
+		else:
 			# Fallback: find closest hex by pixel distance
-			var best_id := -1
 			var best_dist := INF
 			for i in range(pos.hexes.size()):
 				var hp := _axial_to_pixel(pos.hexes[i].axial_q, pos.hexes[i].axial_r)
-				var dp: float = hp.distance_to(hex_info["position"] - g.board_offset)
+				var dp: float = hp.distance_to(pixel_no_offset)
 				if dp < best_dist:
 					best_dist = dp
-					best_id = i
-			if best_id >= 0:
-				axial_to_hex_id[key] = best_id
-		if axial_to_hex_id.has(key):
-			var hid: int = axial_to_hex_id[key]
+					hid = i
+		if hid >= 0:
 			pos.hexes[hid].resource = hex_info["resource_type"]
 			pos.hexes[hid].token = hex_info["number"]
 			pos.hexes[hid].has_robber = hex_info.get("has_robber", false)
 
-	# --- Vertices: match by pixel-space key ---
-	# game.gd uses string pixel keys; engine uses integer vertex IDs.
-	# Build a map from pixel key → engine vertex id.
-	var pixel_key_to_vid: Dictionary = {}
-	for i in range(pos.vertices.size()):
-		var vkey := _get_vertex_pixel_key(pos, i)
-		pixel_key_to_vid[vkey] = i
+	# --- Build mapping: engine vertex id ↔ game vertex key ---
+	# The engine stores its internal pixel-space keys (no board_offset)
+	# in pos.vertex_key_to_id during topology initialization.
+	# The game stores keys that INCLUDE board_offset in g.vertices_by_key.
+	# We convert engine keys → game keys by adding board_offset.
 
-	# Copy vertex ownership from game.gd's vertices_by_key.
+	# vid → game key (with board_offset)
+	var vid_to_game_key: Dictionary = {}
+	for ek in pos.vertex_key_to_id:
+		var vid: int = pos.vertex_key_to_id[ek]
+		var parts = ek.split("_")
+		var gk := "%d_%d" % [int(parts[0]) + bo_x, int(parts[1]) + bo_y]
+		vid_to_game_key[vid] = gk
+
+	# game key (with offset) → engine vid
+	var game_key_to_vid: Dictionary = {}
+	for vid in vid_to_game_key:
+		game_key_to_vid[vid_to_game_key[vid]] = vid
+
+	# --- Vertices: match by pixel-space key ---
 	for vkey in g.vertices_by_key:
-		var visual_vertex = g.vertices_by_key[vkey]
-		if pixel_key_to_vid.has(vkey):
-			var vid: int = pixel_key_to_vid[vkey]
+		if game_key_to_vid.has(vkey):
+			var vid: int = game_key_to_vid[vkey]
+			var visual_vertex = g.vertices_by_key[vkey]
 			pos.vertices[vid].owner_id = visual_vertex.owner_id
 			pos.vertices[vid].is_city = visual_vertex.is_city
 
 	# --- Roads: match by endpoint pixel keys ---
-	# game.gd roads_by_key uses sorted vertex key pairs.
-	# engine roads use integer vertex IDs.
+	# game.gd roads_by_key uses sorted vertex key pairs (with board_offset).
+	# Build a fast lookup: game road key → engine road id.
+	var game_road_key_to_rid: Dictionary = {}
+	for rid in range(pos.roads.size()):
+		var road = pos.roads[rid]
+		if not vid_to_game_key.has(road.vertex_a_id) or not vid_to_game_key.has(road.vertex_b_id):
+			continue
+		var va_key: String = vid_to_game_key[road.vertex_a_id]
+		var vb_key: String = vid_to_game_key[road.vertex_b_id]
+		var engine_rk := _road_key_from_vertex_keys(va_key, vb_key)
+		game_road_key_to_rid[engine_rk] = rid
+
 	for rk in g.roads_by_key:
-		var visual_road = g.roads_by_key[rk]
-		# Find the engine road with matching endpoint vertices
-		for rid in range(pos.roads.size()):
-			var road = pos.roads[rid]
-			if road.owner_id != -1:
-				continue  # already assigned
-			var va_key := _get_vertex_pixel_key(pos, road.vertex_a_id)
-			var vb_key := _get_vertex_pixel_key(pos, road.vertex_b_id)
-			var engine_rk := _road_key_from_vertex_keys(va_key, vb_key)
-			if engine_rk == rk:
-				road.owner_id = visual_road.owner_id
-				break
+		if game_road_key_to_rid.has(rk):
+			var rid: int = game_road_key_to_rid[rk]
+			pos.roads[rid].owner_id = g.roads_by_key[rk].owner_id
 
 	# --- Player state ---
 	for pid in range(num_players):
@@ -1317,18 +1338,13 @@ func from_game_state(game_node: Node) -> BoardPosition:
 		pos.phase = Phase.ROBBER
 		pos.robber_player = g.current_player_index
 	elif g.setup_phase:
-		# Determine setup sub-phase from setup_step
-		# pos.setup_step = g.setup_step
-		# pos.setup_waiting_for_road = g.setup_waiting_for_road
+		# Find the engine vertex id matching setup_last_vertex
 		if g.setup_last_vertex != null:
-			# Find the engine vertex id matching the visual vertex
-			for vid in range(pos.vertices.size()):
-				if pos.vertices[vid].owner_id == g.setup_last_vertex.owner_id:
-					# Additional check: same position
-					var vkey := _get_vertex_pixel_key(pos, vid)
-					if g.vertices_by_key.has(vkey) and g.vertices_by_key[vkey] == g.setup_last_vertex:
-						pos.setup_last_vertex_id = vid
-						break
+			for vkey in g.vertices_by_key:
+				if g.vertices_by_key[vkey] == g.setup_last_vertex:
+					if game_key_to_vid.has(vkey):
+						pos.setup_last_vertex_id = game_key_to_vid[vkey]
+					break
 		# Count completed setup placements
 		pos.setup_placements = g.setup_step
 		var total_setup_steps: int = num_players * 2
@@ -1349,39 +1365,11 @@ func from_game_state(game_node: Node) -> BoardPosition:
 
 
 ## Helper: get the pixel-space key for an engine vertex.
+## Uses the stored topology key mapping (no board_offset).
 func _get_vertex_pixel_key(pos: BoardPosition, vid: int) -> String:
-	# Reconstruct the vertex pixel position from its adjacent hexes.
-	var v: Vertex = pos.vertices[vid]
-	if v.adjacent_hex_indices.size() == 0:
-		return ""
-	# Use the first adjacent hex to compute the pixel position.
-	# We need to find which corner of that hex corresponds to this vertex.
-	var hex_id: int = v.adjacent_hex_indices[0]
-	var hex: Hex = pos.hexes[hex_id]
-	var hex_pixel: Vector2 = _axial_to_pixel(hex.axial_q, hex.axial_r)
-	# Check all 6 corners of this hex to find one matching this vertex
-	for i in range(6):
-		var angle: float = deg_to_rad(60 * i)
-		var corner: Vector2 = hex_pixel + Vector2(cos(angle), sin(angle)) * HEX_SIZE
-		var ckey := _pixel_key(corner)
-		# Check if this corner key maps to the same vertex
-		# by checking if any adjacent hex of this corner also has this vertex
-		var matches := true
-		for adj_hid in v.adjacent_hex_indices:
-			var adj_hex: Hex = pos.hexes[adj_hid]
-			var adj_pixel: Vector2 = _axial_to_pixel(adj_hex.axial_q, adj_hex.axial_r)
-			var found := false
-			for j in range(6):
-				var a_angle: float = deg_to_rad(60 * j)
-				var a_corner: Vector2 = adj_pixel + Vector2(cos(a_angle), sin(a_angle)) * HEX_SIZE
-				if _pixel_key(a_corner) == ckey:
-					found = true
-					break
-			if not found:
-				matches = false
-				break
-		if matches:
-			return ckey
+	for ek in pos.vertex_key_to_id:
+		if pos.vertex_key_to_id[ek] == vid:
+			return ek
 	return ""
 
 
