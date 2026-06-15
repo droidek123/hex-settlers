@@ -51,6 +51,14 @@ const TOKEN_COUNTS: Dictionary = {
 # ---------------------------------------------------------------------------
 # ENUMS
 # ---------------------------------------------------------------------------
+enum Personality {
+	RANDOM,
+	MCTS
+}
+
+func get_random_personality():
+	return Personality.RANDOM;
+
 
 enum Phase {
 	SETUP_FORWARD,      # Initial placement round 1 (p0, p1, p2, p3)
@@ -385,25 +393,25 @@ class BoardPosition:
 
 		# --- 1. Play development cards ---
 		# Knights
-		if p.dev_cards[DevCard.KNIGHT] > 0:
-			moves.append(Move.new(Move.Type.PLAY_KNIGHT))
-		# Monopoly — one move per resource type
-		if p.dev_cards[DevCard.MONOPOLY] > 0:
-			for res in RESOURCE_TYPES:
-				var m := Move.new(Move.Type.PLAY_MONOPOLY)
-				m.monopoly_resource = res
-				moves.append(m)
+		#if p.dev_cards[DevCard.KNIGHT] > 0:
+			#moves.append(Move.new(Move.Type.PLAY_KNIGHT))
+		## Monopoly — one move per resource type
+		#if p.dev_cards[DevCard.MONOPOLY] > 0:
+			#for res in RESOURCE_TYPES:
+				#var m := Move.new(Move.Type.PLAY_MONOPOLY)
+				#m.monopoly_resource = res
+				#moves.append(m)
 		# Year of Plenty — all unordered pairs (including same resource twice)
-		if p.dev_cards[DevCard.YEAR_OF_PLENTY] > 0:
-			for i in range(RESOURCE_TYPES.size()):
-				for j in range(i, RESOURCE_TYPES.size()):
-					var m := Move.new(Move.Type.PLAY_YEAR_OF_PLENTY)
-					m.yop_resource_1 = RESOURCE_TYPES[i]
-					m.yop_resource_2 = RESOURCE_TYPES[j]
-					moves.append(m)
-		# Road Building
-		if p.dev_cards[DevCard.ROAD_BUILDING] > 0:
-			moves.append(Move.new(Move.Type.PLAY_ROAD_BUILDING))
+		#if p.dev_cards[DevCard.YEAR_OF_PLENTY] > 0:
+			#for i in range(RESOURCE_TYPES.size()):
+				#for j in range(i, RESOURCE_TYPES.size()):
+					#var m := Move.new(Move.Type.PLAY_YEAR_OF_PLENTY)
+					#m.yop_resource_1 = RESOURCE_TYPES[i]
+					#m.yop_resource_2 = RESOURCE_TYPES[j]
+					#moves.append(m)
+		## Road Building
+		#if p.dev_cards[DevCard.ROAD_BUILDING] > 0:
+			#moves.append(Move.new(Move.Type.PLAY_ROAD_BUILDING))
 
 		# --- 2. Build settlement ---
 		for v in vertices:
@@ -430,9 +438,9 @@ class BoardPosition:
 					moves.append(m)
 
 		# --- 5. Buy development card ---
-		if dev_deck_remaining > 0:
-			if _can_afford(pid, DEV_CARD_COST):
-				moves.append(Move.new(Move.Type.BUY_DEV_CARD))
+		#if dev_deck_remaining > 0:
+			#if _can_afford(pid, DEV_CARD_COST):
+				#moves.append(Move.new(Move.Type.BUY_DEV_CARD))
 
 		# --- 6. Trade with bank ---
 		# Determine the best trade ratio for each resource the player has
@@ -1028,13 +1036,17 @@ func new_game(num_players: int = 3) -> BoardPosition:
 ## Return the best move for the current player given the board position.
 ## This is the primary interface: the game calls this, gets a Move back,
 ## applies it, and calls again if it's still the same player's turn.
-func search(pos: BoardPosition) -> Move:
-	var move_list: Array[Move] = pos.generate_moves()
+func search(pos: BoardPosition, time: float, personality: Personality) -> Move:
+	
+	if personality == Personality.RANDOM:
+		var move_list: Array[Move] = pos.generate_moves()
 
-	if move_list.is_empty():
-		return Move.new(Move.Type.END_TURN)
+		if move_list.is_empty():
+			return Move.new(Move.Type.END_TURN)
 
-	return move_list.pick_random()
+		return move_list.pick_random()
+	else:
+		return null
 
 func apply_move(pos: BoardPosition, move: Move) -> BoardPosition:
 	var new_board = pos.clone()
@@ -1327,11 +1339,11 @@ func from_game_state(game_node: Node) -> BoardPosition:
 
 	# --- Player state ---
 	for pid in range(num_players):
-		pos.players[pid].resources = g.player_resources[pid].duplicate()
-		pos.players[pid].victory_points = g.victory_points[pid]
-		pos.players[pid].settlements_built = g.player_settlement_counts[pid]
-		pos.players[pid].roads_built = g.player_road_counts[pid]
-		pos.players[pid].cities_built = g.player_city_counts[pid]
+		pos.players[pid].resources = g.player_data[pid].resources.duplicate()
+		pos.players[pid].victory_points = g.player_data[pid].vp
+		pos.players[pid].settlements_built = g.player_data[pid].settlement_count
+		pos.players[pid].roads_built = g.player_data[pid].road_count
+		pos.players[pid].cities_built = g.player_data[pid].city_count
 
 	# --- Phase and turn tracking ---
 	pos.current_player = g.current_player_index

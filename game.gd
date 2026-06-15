@@ -19,7 +19,7 @@ var resource_bag = [
 var number_bag = [
 	2, 3, 3, 4, 4, 5, 5, 6, 6,
 	8, 8, 9, 9, 10, 10, 11, 11, 12
-]
+]	
 
 var hex_size := 42.0
 var map_radius := 2
@@ -33,8 +33,18 @@ var roads_by_key := {}
 var current_player_index := 0
 var has_rolled_this_turn := false
 
-var player_names: Array[String] = []
-var player_colors: Array[Color] = []
+class PlayerData:
+	var name: String
+	var color: Color
+	var is_cpu: bool = false
+	var personality: CatanEngine.Personality = CatanEngine.Personality.RANDOM
+	var settlement_count: int = 0
+	var road_count : int = 0
+	var city_count : int = 0
+	var vp: int = 0
+	var resources : Dictionary
+	
+var player_data: Array[PlayerData] = []
 
 var available_player_colors = [
 	Color.BLUE,
@@ -43,16 +53,11 @@ var available_player_colors = [
 	Color(1.0, 0.55, 0.0)
 ]
 
-var player_settlement_counts: Array[int] = []
-var player_road_counts: Array[int] = []
-var player_city_counts: Array[int] = []
-
 var max_roads := 15
 var max_settlements := 5
 var max_cities := 4
 
-var victory_points: Array[int] = []
-var points_to_win := 5
+var points_to_win := 10
 var game_over := false
 
 # NAJDŁUŻSZA DROGA
@@ -78,8 +83,6 @@ var starting_resources = {
 	"wheat": 0,
 	"ore": 0
 }
-
-var player_resources: Array[Dictionary] = []
 
 var road_cost = {
 	"wood": 1,
@@ -127,14 +130,10 @@ var waiting_for_robber := false
 
 #silnik
 var engine: CatanEngine
-var cpu_players: Array[bool] = []
 var cpu_thinking := false
-var cpu_action_delay := 0.3
+var cpu_action_delay := 0.01
 
 func _ready():
-	DisplayServer.window_set_size(Vector2i(1400, 900))
-	DisplayServer.window_set_position(Vector2i(100, 50))
-
 	randomize()
 	add_to_group("game")
 
@@ -216,40 +215,35 @@ func start_game(count: int, cpu_flags: Array = []):
 	update_turn_ui()
 	update_resources_ui()
 
-	if cpu_players.has(true):
-		show_message("Gra rozpoczęta: " + str(player_count) + " graczy, CPU aktywne")
-	else:
-		show_message("Gra rozpoczęta: " + str(player_count) + " graczy")
+	show_message("Gra rozpoczęta: " + str(player_count) + " graczy")
 
 func setup_players(count: int, cpu_flags: Array = []):
 	player_count = clampi(count, 2, 4)
 
-	player_names.clear()
-	player_colors.clear()
-	player_settlement_counts.clear()
-	player_road_counts.clear()
-	player_city_counts.clear()
-	victory_points.clear()
-	player_resources.clear()
+	player_data.clear()
 	setup_sequence.clear()
-	cpu_players.clear()
 
 	for i in range(player_count):
-		player_names.append("Gracz " + str(i + 1))
-		player_colors.append(available_player_colors[i])
+		
+		var player = PlayerData.new()
+		player.name = "Gracz " + str(i + 1)
+		player.color = available_player_colors[i]
 
-		player_settlement_counts.append(0)
-		player_road_counts.append(0)
-		player_city_counts.append(0)
-		victory_points.append(0)
+		player.settlement_count = 0
+		player.road_count = 0
+		player.city_count = 0
+		player.vp = 0
 
-		player_resources.append(starting_resources.duplicate())
+		player.resources = starting_resources.duplicate()
 
-		if i < cpu_flags.size():
-			cpu_players.append(cpu_flags[i])
+		if i < cpu_flags.size() && cpu_flags[i]:
+			player.is_cpu = true
+			player.personality = engine.get_random_personality()
 		else:
-			cpu_players.append(false)
-
+			player.is_cpu = false
+		
+		player_data.append(player)
+		
 	for i in range(player_count):
 		setup_sequence.append(i)
 
@@ -393,9 +387,9 @@ func update_resources_ui():
 	if longest_road_owner == -1:
 		left_text += "Najdłuższa droga: brak\n\n"
 	else:
-		left_text += "Najdłuższa droga: " + player_names[longest_road_owner] + " (" + str(longest_road_length) + ")\n\n"
+		left_text += "Najdłuższa droga: " + player_data[longest_road_owner].name + " (" + str(longest_road_length) + ")\n\n"
 
-	for i in range(player_names.size()):
+	for i in range(player_data.size()):
 		var block := get_player_status_text(i)
 
 		if i < 2:
@@ -413,19 +407,19 @@ func update_resources_ui():
 
 
 func get_player_status_text(player_id: int) -> String:
-	var res = player_resources[player_id]
+	var data : PlayerData = player_data[player_id]
 
 	var text := ""
-	text += player_names[player_id] + ":\n"
-	text += "  Punkty: " + str(victory_points[player_id]) + " / " + str(points_to_win) + "\n"
-	text += "  Osady: " + str(player_settlement_counts[player_id]) + " / " + str(max_settlements) + "\n"
-	text += "  Miasta: " + str(player_city_counts[player_id]) + " / " + str(max_cities) + "\n"
-	text += "  Drogi: " + str(player_road_counts[player_id]) + " / " + str(max_roads) + "\n"
-	text += "  Drewno: " + str(res["wood"]) + "\n"
-	text += "  Cegła: " + str(res["brick"]) + "\n"
-	text += "  Owce: " + str(res["sheep"]) + "\n"
-	text += "  Zboże: " + str(res["wheat"]) + "\n"
-	text += "  Ruda: " + str(res["ore"]) + "\n\n"
+	text += data.name + ":\n"
+	text += "  Punkty: " + str(data.vp) + " / " + str(points_to_win) + "\n"
+	text += "  Osady: " + str(data.settlement_count) + " / " + str(max_settlements) + "\n"
+	text += "  Miasta: " + str(data.city_count) + " / " + str(max_cities) + "\n"
+	text += "  Drogi: " + str(data.road_count) + " / " + str(max_roads) + "\n"
+	text += "  Drewno: " + str(data.resources["wood"]) + "\n"
+	text += "  Cegła: " + str(data.resources["brick"]) + "\n"
+	text += "  Owce: " + str(data.resources["sheep"]) + "\n"
+	text += "  Zboże: " + str(data.resources["wheat"]) + "\n"
+	text += "  Ruda: " + str(data.resources["ore"]) + "\n\n"
 
 	return text
 
@@ -444,7 +438,7 @@ func next_turn():
 
 	current_player_index += 1
 
-	if current_player_index >= player_names.size():
+	if current_player_index >= player_data.size():
 		current_player_index = 0
 
 	has_rolled_this_turn = false
@@ -520,7 +514,7 @@ func produce_resources(rolled_number: int):
 				add_resource(vertex.owner_id, resource_type, amount)
 
 				show_message(
-					player_names[vertex.owner_id]
+					player_data[vertex.owner_id].name
 					+ " dostaje +"
 					+ str(amount)
 					+ " "
@@ -532,10 +526,10 @@ func add_resource(player_id: int, resource_type: String, amount: int):
 	if player_id < 0:
 		return
 
-	if player_id >= player_resources.size():
+	if player_id >= player_data.size():
 		return
 
-	player_resources[player_id][resource_type] += amount
+	player_data[player_id].resources[resource_type] += amount
 
 
 func get_resource_name_pl(resource_type: String) -> String:
@@ -559,11 +553,11 @@ func get_current_player_id() -> int:
 
 
 func get_current_player_name() -> String:
-	return player_names[current_player_index]
+	return player_data[current_player_index].name
 
 
 func get_current_player_color() -> Color:
-	return player_colors[current_player_index]
+	return player_data[current_player_index].color
 
 
 func generate_board():
@@ -690,8 +684,8 @@ func generate_roads():
 
 
 func register_settlement(player_id: int):
-	player_settlement_counts[player_id] += 1
-	victory_points[player_id] += 1
+	player_data[player_id].settlement_count += 1
+	player_data[player_id].vp += 1
 
 	refresh_longest_road()
 	update_resources_ui()
@@ -699,30 +693,30 @@ func register_settlement(player_id: int):
 
 
 func register_road(player_id: int):
-	player_road_counts[player_id] += 1
+	player_data[player_id].road_count += 1
 
 	refresh_longest_road()
 	update_resources_ui()
 
 
 func register_city(player_id: int):
-	player_city_counts[player_id] += 1
-	player_settlement_counts[player_id] = max(player_settlement_counts[player_id] - 1, 0)
+	player_data[player_id].city_count += 1
+	player_data[player_id].settlement_count = max(player_data[player_id].settlement_count - 1, 0)
 
-	victory_points[player_id] += 1
+	player_data[player_id].vp += 1
 
 	update_resources_ui()
 	check_victory(player_id)
 
 
 func check_victory(player_id: int):
-	if victory_points[player_id] >= points_to_win:
+	if player_data[player_id].vp >= points_to_win:
 		game_over = true
 
-		turn_label.text = "Wygrywa: " + player_names[player_id]
-		turn_label.modulate = player_colors[player_id]
+		turn_label.text = "Wygrywa: " + player_data[player_id].name
+		turn_label.modulate = player_data[player_id].color
 
-		show_message(player_names[player_id] + " wygrywa grę!")
+		show_message(player_data[player_id].name + " wygrywa grę!")
 
 
 func can_build_settlement(vertex) -> bool:
@@ -742,7 +736,7 @@ func can_build_settlement(vertex) -> bool:
 
 	var player_id = get_current_player_id()
 
-	if player_settlement_counts[player_id] >= max_settlements:
+	if player_data[player_id].settlement_count >= max_settlements:
 		show_message("Osiągnięto limit osad")
 		return false
 
@@ -785,7 +779,7 @@ func can_upgrade_city(vertex) -> bool:
 
 	var player_id = get_current_player_id()
 
-	if player_city_counts[player_id] >= max_cities:
+	if player_data[player_id].city_count >= max_cities:
 		show_message("Osiągnięto limit miast")
 		return false
 
@@ -813,7 +807,7 @@ func can_build_road(road) -> bool:
 
 	var player_id = get_current_player_id()
 
-	if player_road_counts[player_id] >= max_roads:
+	if player_data[player_id].road_count >= max_roads:
 		show_message("Osiągnięto limit dróg")
 		return false
 
@@ -872,7 +866,7 @@ func axial_to_world(q: int, r: int) -> Vector2:
 
 
 func has_resources(player_id: int, cost: Dictionary) -> bool:
-	var resources = player_resources[player_id]
+	var resources = player_data[player_id].resources
 
 	for resource_type in cost.keys():
 		if resources[resource_type] < cost[resource_type]:
@@ -882,7 +876,7 @@ func has_resources(player_id: int, cost: Dictionary) -> bool:
 
 
 func pay_resources(player_id: int, cost: Dictionary):
-	var resources = player_resources[player_id]
+	var resources = player_data[player_id].resources
 
 	for resource_type in cost.keys():
 		resources[resource_type] -= cost[resource_type]
@@ -992,15 +986,15 @@ func give_starting_resources_from_vertex(vertex, player_id: int):
 			parts.append(get_resource_name_pl(resource_type) + " +" + str(gained[resource_type]))
 
 	if parts.is_empty():
-		show_message(player_names[player_id] + " nie dostał startowych surowców")
+		show_message(player_data[player_id].name + " nie dostał startowych surowców")
 	else:
-		show_message(player_names[player_id] + " dostaje startowe surowce: " + ", ".join(parts))
+		show_message(player_data[player_id].name + " dostaje startowe surowce: " + ", ".join(parts))
 
 	update_resources_ui()
 
 func on_city_built(vertex, player_id: int):
 	register_city(player_id)
-	show_message(player_names[player_id] + " rozbudował osadę do miasta")
+	show_message(player_data[player_id].name + " rozbudował osadę do miasta")
 
 
 func on_road_built(road, player_id: int):
@@ -1122,7 +1116,7 @@ func trade_4_to_1():
 		return
 
 	var player_id = get_current_player_id()
-	var resources = player_resources[player_id]
+	var resources = player_data[player_id].resources
 
 	if resources[from_resource] < 4:
 		trade_info_label.text = "Brakuje: " + get_resource_name_pl(from_resource)
@@ -1153,7 +1147,7 @@ func trade_4_to_1():
 func refresh_longest_road():
 	var lengths: Array[int] = []
 
-	for player_id in range(player_names.size()):
+	for player_id in range(player_data.size()):
 		var length := compute_longest_road_for_player(player_id)
 		lengths.append(length)
 
@@ -1181,12 +1175,12 @@ func refresh_longest_road():
 
 	if old_owner != new_owner:
 		if old_owner != -1:
-			victory_points[old_owner] = max(victory_points[old_owner] - longest_road_bonus_points, 0)
-			show_message(player_names[old_owner] + " traci Najdłuższą Drogę")
+			player_data[old_owner].vp = max(player_data[old_owner].vp - longest_road_bonus_points, 0)
+			show_message(player_data[old_owner].name + " traci Najdłuższą Drogę")
 
 		if new_owner != -1:
-			victory_points[new_owner] += longest_road_bonus_points
-			show_message(player_names[new_owner] + " zdobywa Najdłuższą Drogę +" + str(longest_road_bonus_points) + " punkty")
+			player_data[new_owner].vp += longest_road_bonus_points
+			show_message(player_data[new_owner].name + " zdobywa Najdłuższą Drogę +" + str(longest_road_bonus_points) + " punkty")
 
 	longest_road_owner = new_owner
 
@@ -1288,7 +1282,7 @@ func start_robber_phase():
 
 
 func discard_for_seven():
-	for player_id in range(player_names.size()):
+	for player_id in range(player_data.size()):
 		var total := get_total_resources(player_id)
 
 		if total <= 7:
@@ -1303,30 +1297,30 @@ func auto_discard_resources(player_id: int, amount_to_discard: int):
 	var sorted_resources = resource_order.duplicate()
 
 	sorted_resources.sort_custom(func(a, b):
-		return player_resources[player_id][a] > player_resources[player_id][b]
+		return player_data[player_id].resources[a] > player_data[player_id].resources[b]
 	)
 
 	for resource_type in sorted_resources:
 		if remaining <= 0:
 			break
 
-		var available = player_resources[player_id][resource_type]
+		var available = player_data[player_id].resources[resource_type]
 		var taken = min(available, remaining)
 
 		if taken <= 0:
 			continue
 
-		player_resources[player_id][resource_type] -= taken
+		player_data[player_id].resources[resource_type] -= taken
 		remaining -= taken
 
-	show_message(player_names[player_id] + " odrzuca " + str(amount_to_discard) + " surowców")
+	show_message(player_data[player_id].name + " odrzuca " + str(amount_to_discard) + " surowców")
 
 
 func get_total_resources(player_id: int) -> int:
 	var total := 0
 
 	for resource_type in resource_order:
-		total += player_resources[player_id][resource_type]
+		total += player_data[player_id].resources[resource_type]
 
 	return total
 
@@ -1425,15 +1419,15 @@ func steal_random_resource_from_adjacent_player(hex_info):
 		show_message("Przeciwnik nie ma surowców do kradzieży")
 		return
 
-	player_resources[target_id][stolen_resource] -= 1
-	player_resources[current_player_id][stolen_resource] += 1
+	player_data[target_id].resources[stolen_resource] -= 1
+	player_data[current_player_id].resources[stolen_resource] += 1
 
 	show_message(
 		get_current_player_name()
 		+ " kradnie 1 "
 		+ get_resource_name_pl(stolen_resource)
 		+ " od "
-		+ player_names[target_id]
+		+ player_data[target_id].name
 	)
 
 
@@ -1441,7 +1435,7 @@ func get_random_resource_from_player(player_id: int) -> String:
 	var available_resources: Array[String] = []
 
 	for resource_type in resource_order:
-		var amount = player_resources[player_id][resource_type]
+		var amount = player_data[player_id].resources[resource_type]
 
 		for i in range(amount):
 			available_resources.append(resource_type)
@@ -1504,10 +1498,7 @@ func is_current_player_cpu() -> bool:
 	if current_player_index < 0:
 		return false
 
-	if current_player_index >= cpu_players.size():
-		return false
-
-	return cpu_players[current_player_index]
+	return player_data[current_player_index].is_cpu
 
 
 func run_cpu_turn_if_needed():
@@ -1576,10 +1567,13 @@ func run_cpu_turn_if_needed():
 func get_cpu_candidate_moves(pos) -> Array:
 	var result: Array = []
 
-	var searched_move = engine.search(pos)
+	var searched_move = engine.search(pos, cpu_action_delay, CatanEngine.Personality.RANDOM)
 
 	if is_supported_cpu_move(searched_move):
 		result.append(searched_move)
+	else :
+		print("playing: ", searched_move)
+	return result
 
 	var generated_moves: Array = pos.generate_moves()
 	generated_moves.shuffle()
@@ -1708,11 +1702,11 @@ func apply_engine_bank_trade(move: CatanEngine.Move) -> bool:
 
 	var player_id = get_current_player_id()
 
-	if player_resources[player_id][move.bank_give] < move.bank_give_amount:
+	if player_data[player_id].resources[move.bank_give] < move.bank_give_amount:
 		return false
 
-	player_resources[player_id][move.bank_give] -= move.bank_give_amount
-	player_resources[player_id][move.bank_receive] += 1
+	player_data[player_id].resources[move.bank_give] -= move.bank_give_amount
+	player_data[player_id].resources[move.bank_receive] += 1
 
 	show_message(
 		get_current_player_name()
@@ -1733,10 +1727,10 @@ func apply_engine_discard(move: CatanEngine.Move) -> bool:
 	for resource_type in move.discard_resources.keys():
 		var amount = move.discard_resources[resource_type]
 
-		if not player_resources[player_id].has(resource_type):
+		if not player_data[player_id].resources.has(resource_type):
 			continue
 
-		player_resources[player_id][resource_type] = max(player_resources[player_id][resource_type] - amount, 0)
+		player_data[player_id].resources[resource_type] = max(player_data[player_id].resources[resource_type] - amount, 0)
 
 	update_resources_ui()
 	show_message(get_current_player_name() + " CPU odrzuca surowce")
