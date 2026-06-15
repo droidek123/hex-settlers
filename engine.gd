@@ -1027,7 +1027,10 @@ func new_game(num_players: int = 3) -> BoardPosition:
 func search(pos: BoardPosition) -> Move:
 	var move_list : Array[Move] = pos.generate_moves()
 	
-	return move_list.pick_random()
+	print("Lista ruchów:", move_list)
+	var chosen = move_list.pick_random()
+	print("Wybrany:", chosen)
+	return chosen
 
 
 ## Apply a move to a board position, returning a new position.
