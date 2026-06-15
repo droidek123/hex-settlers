@@ -368,7 +368,7 @@ class BoardPosition:
 	func _movegen_setup_road() -> Array[Move]:
 		# Must attach to the last settlement placed in setup.
 		var anchor: int = setup_last_vertex_id
-		var move_list = []
+		var move_list: Array[Move] = []
 		
 		for r in roads:
 			if r.owner_id == -1 and (r.vertex_a_id == anchor or r.vertex_b_id == anchor):
@@ -527,12 +527,10 @@ class BoardPosition:
 
 
 	func _movegen_road_building() -> Array[Move]:
-		# Place up to 2 free roads.
 		if free_roads_remaining <= 0:
 			return [Move.new(Move.Type.END_TURN)]
 		# TODO: pick best free road
-		
-		var move_list = []
+		var move_list: Array[Move] = []
 		for r in roads:
 			if _is_valid_road_placement(r.id):
 				var move := Move.new(Move.Type.BUILD_ROAD)

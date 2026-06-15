@@ -357,6 +357,7 @@ func update_turn_ui():
 
 	#test
 	var bp = engine.from_game_state(self)
+	print(bp)
 	engine.search(bp)
 
 func update_resources_ui():
