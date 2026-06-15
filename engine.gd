@@ -1048,6 +1048,91 @@ func search(pos: BoardPosition, time: float, personality: Personality) -> Move:
 	else:
 		return null
 
+
+# ---------------------------------------------------------------------------
+# STATIC EVALUATION (for MCTS leaf nodes)
+# ---------------------------------------------------------------------------
+
+## Dice combination counts, indexed by token number (0..12).
+## The probability of rolling N is TOKEN_COMBOS[N] / 36.
+const TOKEN_COMBOS: Array[int] = [
+	0, 0,  # 0, 1 — impossible
+	1, 2,  # 2, 3
+	3, 4,  # 4, 5
+	5, 0,  # 6, 7 (7 = robber, no production)
+	5, 4,  # 8, 9
+	3, 2,  # 10, 11
+	1      # 12
+]
+
+## Static evaluation of a BoardPosition from each player's perspective.
+## Returns an array of scores, one per player. Higher = better position.
+## Designed for use as leaf-node evaluation in MCTS.
+##
+## Factors weighted into the score:
+##   - Victory points (heaviest)
+##   - Buildings (settlements, cities, roads)
+##   - Resources in hand (liquid convertible value)
+##   - Development cards held
+##   - Knights played (toward Largest Army)
+##   - Longest Road / Largest Army possession
+##   - Resource production potential from hex adjacency
+func evaluate(pos: BoardPosition) -> Array[float]:
+	var scores: Array[float] = []
+	scores.resize(pos.num_players)
+
+	for pid in range(pos.num_players):
+		var p := pos.players[pid]
+		var score: float = 0.0
+
+		# 1. Raw victory points (highest weight — primary win condition)
+		score += p.victory_points * 1000.0
+
+		# 2. Building count (each building provides VP + production + expansion)
+		score += p.settlements_built * 80.0    # 1 VP + production potential
+		score += p.cities_built * 200.0        # 2 VP + double production
+		score += p.roads_built * 20.0           # enables expansion
+
+		# 3. Resources in hand (liquid — can be converted to buildings / dev cards)
+		for r in RESOURCE_TYPES:
+			score += p.resources[r] * 10.0
+
+		# 4. Development cards (unplayed) — hidden value
+		var total_dev: int = 0
+		for k in p.dev_cards:
+			total_dev += p.dev_cards[k]
+		score += total_dev * 25.0
+
+		# 5. Knights played — contributes toward Largest Army (threshold: 3)
+		score += p.knights_played * 35.0
+
+		# 6. Longest Road / Largest Army bonus ownership
+		if pos.longest_road_player == pid:
+			score += 200.0  # equivalent to 2 VP
+		if pos.largest_army_player == pid:
+			score += 200.0
+
+		# 7. Resource production potential from settlements/cities
+		# Sum the expected resource yield per dice roll, weighted by
+		# the dice-probability of each adjacent hex's token number.
+		var prod_score: float = 0.0
+		for v in pos.vertices:
+			if v.owner_id == pid:
+				var mult: float = 2.0 if v.is_city else 1.0
+				for hex_id in v.adjacent_hex_indices:
+					var h := pos.hexes[hex_id]
+					if h.resource == "desert" or h.has_robber:
+						continue
+					var combos: int = TOKEN_COMBOS[h.token] if h.token >= 0 and h.token < TOKEN_COMBOS.size() else 0
+					prod_score += float(combos) * mult
+		# Normalise by total combos (36) and scale to meaningful magnitude
+		score += prod_score * (500.0 / 36.0)
+
+		scores[pid] = score
+
+	return scores
+
+
 func apply_move(pos: BoardPosition, move: Move) -> BoardPosition:
 	var new_board = pos.clone()
 	_apply_move_to_board(new_board, move)
@@ -1202,10 +1287,6 @@ func _initialize_board_topology(board_position: BoardPosition) -> void:
 		for hex_id in vertex_adj_hex[vid]:
 			arr.append(hex_id)
 		b.vertices[vid].adjacent_hex_indices = arr
-
-	# Store topology key mappings for adapters used by game.gd / CPU integration.
-	b.vertex_key_to_id = vertex_key_to_id.duplicate()
-	b.road_key_to_id = road_key_to_id.duplicate()
 
 	assert(b.vertices.size() == VERTEX_COUNT, "Expected %d vertices, got %d" % [VERTEX_COUNT, b.vertices.size()])
 	assert(b.roads.size() == ROAD_COUNT, "Expected %d roads, got %d" % [ROAD_COUNT, b.roads.size()])

@@ -1566,8 +1566,9 @@ func run_cpu_turn_if_needed():
 
 func get_cpu_candidate_moves(pos) -> Array:
 	var result: Array = []
+	var player = player_data[current_player_index]
 
-	var searched_move = engine.search(pos, cpu_action_delay, CatanEngine.Personality.RANDOM)
+	var searched_move = engine.search(pos, cpu_action_delay, player.personality)
 
 	if is_supported_cpu_move(searched_move):
 		result.append(searched_move)
