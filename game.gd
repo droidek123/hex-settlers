@@ -129,7 +129,7 @@ var waiting_for_robber := false
 var engine: CatanEngine
 var cpu_players: Array[bool] = []
 var cpu_thinking := false
-var cpu_action_delay := 0.45
+var cpu_action_delay := 0.3
 
 func _ready():
 	DisplayServer.window_set_size(Vector2i(1400, 900))
@@ -146,49 +146,56 @@ func create_start_menu():
 	add_child(start_canvas)
 
 	var panel := Panel.new()
-	panel.position = Vector2(430, 190)
-	panel.size = Vector2(540, 470)
+	panel.position = Vector2(430, 170)
+	panel.size = Vector2(540, 540)
 	start_canvas.add_child(panel)
 
 	var title := Label.new()
 	title.text = "HexSettlers"
-	title.position = Vector2(585, 230)
+	title.position = Vector2(585, 210)
 	title.add_theme_font_size_override("font_size", 36)
 	start_canvas.add_child(title)
 
 	var subtitle := Label.new()
 	subtitle.text = "Wybierz tryb gry"
-	subtitle.position = Vector2(590, 295)
+	subtitle.position = Vector2(590, 275)
 	subtitle.add_theme_font_size_override("font_size", 22)
 	start_canvas.add_child(subtitle)
 
 	var button_local := Button.new()
 	button_local.text = "2 graczy lokalnie"
-	button_local.position = Vector2(575, 350)
+	button_local.position = Vector2(575, 330)
 	button_local.size = Vector2(250, 45)
 	button_local.pressed.connect(func(): start_game(2, [false, false]))
 	start_canvas.add_child(button_local)
 
 	var button_cpu_2 := Button.new()
 	button_cpu_2.text = "1 gracz + 1 CPU"
-	button_cpu_2.position = Vector2(575, 410)
+	button_cpu_2.position = Vector2(575, 390)
 	button_cpu_2.size = Vector2(250, 45)
 	button_cpu_2.pressed.connect(func(): start_game(2, [false, true]))
 	start_canvas.add_child(button_cpu_2)
 
 	var button_cpu_3 := Button.new()
 	button_cpu_3.text = "1 gracz + 2 CPU"
-	button_cpu_3.position = Vector2(575, 470)
+	button_cpu_3.position = Vector2(575, 450)
 	button_cpu_3.size = Vector2(250, 45)
 	button_cpu_3.pressed.connect(func(): start_game(3, [false, true, true]))
 	start_canvas.add_child(button_cpu_3)
 
 	var button_cpu_4 := Button.new()
 	button_cpu_4.text = "1 gracz + 3 CPU"
-	button_cpu_4.position = Vector2(575, 530)
+	button_cpu_4.position = Vector2(575, 510)
 	button_cpu_4.size = Vector2(250, 45)
 	button_cpu_4.pressed.connect(func(): start_game(4, [false, true, true, true]))
 	start_canvas.add_child(button_cpu_4)
+
+	var button_cpu_only := Button.new()
+	button_cpu_only.text = "4 CPU"
+	button_cpu_only.position = Vector2(575, 570)
+	button_cpu_only.size = Vector2(250, 45)
+	button_cpu_only.pressed.connect(func(): start_game(4, [true, true, true, true]))
+	start_canvas.add_child(button_cpu_only)
 
 func start_game(count: int, cpu_flags: Array = []):
 	if start_canvas != null:
@@ -1532,7 +1539,7 @@ func run_cpu_turn_if_needed():
 		show_message(get_current_player_name() + " CPU rzuca kostką")
 		roll_dice()
 		await get_tree().create_timer(cpu_action_delay).timeout
-
+		
 		if game_over:
 			cpu_thinking = false
 			return
