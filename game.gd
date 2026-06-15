@@ -127,6 +127,9 @@ var waiting_for_robber := false
 
 #silnik
 var engine: CatanEngine
+var cpu_players: Array[bool] = []
+var cpu_thinking := false
+var cpu_action_delay := 0.45
 
 func _ready():
 	DisplayServer.window_set_size(Vector2i(1400, 900))
@@ -143,50 +146,58 @@ func create_start_menu():
 	add_child(start_canvas)
 
 	var panel := Panel.new()
-	panel.position = Vector2(450, 220)
-	panel.size = Vector2(500, 360)
+	panel.position = Vector2(430, 190)
+	panel.size = Vector2(540, 470)
 	start_canvas.add_child(panel)
 
 	var title := Label.new()
 	title.text = "HexSettlers"
-	title.position = Vector2(590, 260)
+	title.position = Vector2(585, 230)
 	title.add_theme_font_size_override("font_size", 36)
 	start_canvas.add_child(title)
 
 	var subtitle := Label.new()
-	subtitle.text = "Wybierz liczbę graczy"
-	subtitle.position = Vector2(570, 325)
+	subtitle.text = "Wybierz tryb gry"
+	subtitle.position = Vector2(590, 295)
 	subtitle.add_theme_font_size_override("font_size", 22)
 	start_canvas.add_child(subtitle)
 
-	var button_2 := Button.new()
-	button_2.text = "2 graczy"
-	button_2.position = Vector2(600, 380)
-	button_2.size = Vector2(200, 45)
-	button_2.pressed.connect(func(): start_game(2))
-	start_canvas.add_child(button_2)
+	var button_local := Button.new()
+	button_local.text = "2 graczy lokalnie"
+	button_local.position = Vector2(575, 350)
+	button_local.size = Vector2(250, 45)
+	button_local.pressed.connect(func(): start_game(2, [false, false]))
+	start_canvas.add_child(button_local)
 
-	var button_3 := Button.new()
-	button_3.text = "3 graczy"
-	button_3.position = Vector2(600, 440)
-	button_3.size = Vector2(200, 45)
-	button_3.pressed.connect(func(): start_game(3))
-	start_canvas.add_child(button_3)
+	var button_cpu_2 := Button.new()
+	button_cpu_2.text = "1 gracz + 1 CPU"
+	button_cpu_2.position = Vector2(575, 410)
+	button_cpu_2.size = Vector2(250, 45)
+	button_cpu_2.pressed.connect(func(): start_game(2, [false, true]))
+	start_canvas.add_child(button_cpu_2)
 
-	var button_4 := Button.new()
-	button_4.text = "4 graczy"
-	button_4.position = Vector2(600, 500)
-	button_4.size = Vector2(200, 45)
-	button_4.pressed.connect(func(): start_game(4))
-	start_canvas.add_child(button_4)
+	var button_cpu_3 := Button.new()
+	button_cpu_3.text = "1 gracz + 2 CPU"
+	button_cpu_3.position = Vector2(575, 470)
+	button_cpu_3.size = Vector2(250, 45)
+	button_cpu_3.pressed.connect(func(): start_game(3, [false, true, true]))
+	start_canvas.add_child(button_cpu_3)
 
+	var button_cpu_4 := Button.new()
+	button_cpu_4.text = "1 gracz + 3 CPU"
+	button_cpu_4.position = Vector2(575, 530)
+	button_cpu_4.size = Vector2(250, 45)
+	button_cpu_4.pressed.connect(func(): start_game(4, [false, true, true, true]))
+	start_canvas.add_child(button_cpu_4)
 
-func start_game(count: int):
+func start_game(count: int, cpu_flags: Array = []):
 	if start_canvas != null:
 		start_canvas.queue_free()
 		start_canvas = null
 
-	setup_players(count)
+	engine = CatanEngine.new()
+
+	setup_players(count, cpu_flags)
 
 	create_turn_ui()
 
@@ -194,14 +205,16 @@ func start_game(count: int):
 	generate_vertices()
 	generate_roads()
 	create_robber_marker()
-	engine = CatanEngine.new()
 
 	update_turn_ui()
 	update_resources_ui()
-	show_message("Gra rozpoczęta: " + str(player_count) + " graczy")
 
+	if cpu_players.has(true):
+		show_message("Gra rozpoczęta: " + str(player_count) + " graczy, CPU aktywne")
+	else:
+		show_message("Gra rozpoczęta: " + str(player_count) + " graczy")
 
-func setup_players(count: int):
+func setup_players(count: int, cpu_flags: Array = []):
 	player_count = clampi(count, 2, 4)
 
 	player_names.clear()
@@ -212,6 +225,7 @@ func setup_players(count: int):
 	victory_points.clear()
 	player_resources.clear()
 	setup_sequence.clear()
+	cpu_players.clear()
 
 	for i in range(player_count):
 		player_names.append("Gracz " + str(i + 1))
@@ -223,6 +237,11 @@ func setup_players(count: int):
 		victory_points.append(0)
 
 		player_resources.append(starting_resources.duplicate())
+
+		if i < cpu_flags.size():
+			cpu_players.append(cpu_flags[i])
+		else:
+			cpu_players.append(false)
 
 	for i in range(player_count):
 		setup_sequence.append(i)
@@ -243,9 +262,9 @@ func setup_players(count: int):
 
 	waiting_for_robber = false
 	robber_hex_info = null
+	cpu_thinking = false
 
 	message_history.clear()
-
 
 func create_turn_ui():
 	var canvas := CanvasLayer.new()
@@ -353,12 +372,12 @@ func update_turn_ui():
 	else:
 		turn_label.text = "Tura: " + get_current_player_name()
 
+	if is_current_player_cpu():
+		turn_label.text += " [CPU]"
+
 	turn_label.modulate = get_current_player_color()
 
-	#test
-	var bp = engine.from_game_state(self)
-	print(bp)
-	engine.search(bp)
+	call_deferred("run_cpu_turn_if_needed")
 
 func update_resources_ui():
 	var left_text := ""
@@ -588,6 +607,8 @@ func generate_board():
 			var hex_info = {
 				"node": hex,
 				"position": pos,
+				"axial_q": q,
+				"axial_r": r,
 				"resource_type": hex.resource_type,
 				"number": hex.number,
 				"vertex_keys": vertex_keys,
@@ -936,15 +957,25 @@ func give_starting_resources_from_vertex(vertex, player_id: int):
 	}
 
 	for hex_info in hex_infos:
-		if not hex_info["vertex_keys"].has(vertex_key):
-			continue
-
 		var resource_type = hex_info["resource_type"]
 
 		if resource_type == "desert":
 			continue
 
-		player_resources[player_id][resource_type] += 1
+		var is_adjacent := false
+
+		if hex_info["vertex_keys"].has(vertex_key):
+			is_adjacent = true
+		else:
+			for key in hex_info["vertex_keys"]:
+				if vertices_by_key.has(key) and vertices_by_key[key] == vertex:
+					is_adjacent = true
+					break
+
+		if not is_adjacent:
+			continue
+
+		add_resource(player_id, resource_type, 1)
 		gained[resource_type] += 1
 
 	var parts: Array[String] = []
@@ -956,17 +987,9 @@ func give_starting_resources_from_vertex(vertex, player_id: int):
 	if parts.is_empty():
 		show_message(player_names[player_id] + " nie dostał startowych surowców")
 	else:
-		var summary := ""
-
-		for i in range(parts.size()):
-			if i > 0:
-				summary += ", "
-			summary += parts[i]
-
-		show_message(player_names[player_id] + " dostaje startowe surowce: " + summary)
+		show_message(player_names[player_id] + " dostaje startowe surowce: " + ", ".join(parts))
 
 	update_resources_ui()
-
 
 func on_city_built(vertex, player_id: int):
 	register_city(player_id)
@@ -1465,3 +1488,323 @@ func update_robber_marker():
 
 	robber_marker.visible = true
 	robber_marker.position = robber_hex_info["position"]
+
+# ============================================================
+# CPU / CATAN ENGINE INTEGRATION
+# ============================================================
+
+func is_current_player_cpu() -> bool:
+	if current_player_index < 0:
+		return false
+
+	if current_player_index >= cpu_players.size():
+		return false
+
+	return cpu_players[current_player_index]
+
+
+func run_cpu_turn_if_needed():
+	if engine == null:
+		return
+
+	if cpu_thinking:
+		return
+
+	if game_over:
+		return
+
+	if not is_current_player_cpu():
+		return
+
+	cpu_thinking = true
+
+	await get_tree().create_timer(cpu_action_delay).timeout
+
+	if game_over:
+		cpu_thinking = false
+		return
+
+	if not is_current_player_cpu():
+		cpu_thinking = false
+		return
+
+	if not setup_phase and not waiting_for_robber and not has_rolled_this_turn:
+		show_message(get_current_player_name() + " CPU rzuca kostką")
+		roll_dice()
+		await get_tree().create_timer(cpu_action_delay).timeout
+
+		if game_over:
+			cpu_thinking = false
+			return
+
+	var pos = engine.from_game_state(self)
+	var candidate_moves = get_cpu_candidate_moves(pos)
+	var applied := false
+	var applied_move = null
+
+	for move in candidate_moves:
+		if apply_engine_move_to_game(move, pos):
+			applied = true
+			applied_move = move
+			break
+
+	cpu_thinking = false
+
+	if not applied:
+		show_message(get_current_player_name() + " CPU nie znalazł poprawnego ruchu")
+
+		if not setup_phase and not waiting_for_robber:
+			next_turn()
+		else:
+			call_deferred("run_cpu_turn_if_needed")
+
+		return
+
+	show_message(get_current_player_name() + " CPU wykonał: " + str(applied_move))
+
+	update_resources_ui()
+	update_turn_ui()
+
+
+func get_cpu_candidate_moves(pos) -> Array:
+	var result: Array = []
+
+	var searched_move = engine.search(pos)
+
+	if is_supported_cpu_move(searched_move):
+		result.append(searched_move)
+
+	var generated_moves: Array = pos.generate_moves()
+	generated_moves.shuffle()
+
+	for move in generated_moves:
+		if not is_supported_cpu_move(move):
+			continue
+
+		if not result.has(move):
+			result.append(move)
+
+	if result.is_empty():
+		result.append(CatanEngine.Move.new(CatanEngine.Move.Type.END_TURN))
+
+	return result
+
+
+func is_supported_cpu_move(move: CatanEngine.Move) -> bool:
+	match move.type:
+		CatanEngine.Move.Type.SETTLEMENT:
+			return true
+		CatanEngine.Move.Type.ROAD:
+			return true
+		CatanEngine.Move.Type.BUILD_SETTLEMENT:
+			return true
+		CatanEngine.Move.Type.BUILD_ROAD:
+			return true
+		CatanEngine.Move.Type.BUILD_CITY:
+			return true
+		CatanEngine.Move.Type.TRADE_BANK:
+			return true
+		CatanEngine.Move.Type.MOVE_ROBBER:
+			return true
+		CatanEngine.Move.Type.DISCARD:
+			return true
+		CatanEngine.Move.Type.END_TURN:
+			return true
+		_:
+			return false
+
+
+func apply_engine_move_to_game(move: CatanEngine.Move, pos) -> bool:
+	match move.type:
+		CatanEngine.Move.Type.SETTLEMENT:
+			return apply_engine_settlement(move, pos)
+
+		CatanEngine.Move.Type.ROAD:
+			return apply_engine_road(move, pos)
+
+		CatanEngine.Move.Type.BUILD_SETTLEMENT:
+			return apply_engine_settlement(move, pos)
+
+		CatanEngine.Move.Type.BUILD_ROAD:
+			return apply_engine_road(move, pos)
+
+		CatanEngine.Move.Type.BUILD_CITY:
+			return apply_engine_city(move, pos)
+
+		CatanEngine.Move.Type.TRADE_BANK:
+			return apply_engine_bank_trade(move)
+
+		CatanEngine.Move.Type.MOVE_ROBBER:
+			return apply_engine_robber(move, pos)
+
+		CatanEngine.Move.Type.DISCARD:
+			return apply_engine_discard(move)
+
+		CatanEngine.Move.Type.END_TURN:
+			if setup_phase:
+				return false
+			next_turn()
+			return true
+
+		_:
+			return false
+
+
+func apply_engine_settlement(move: CatanEngine.Move, pos) -> bool:
+	var vertex = get_visual_vertex_from_engine_id(pos, move.vertex_id)
+
+	if vertex == null:
+		return false
+
+	if not can_build_settlement(vertex):
+		return false
+
+	vertex.build_settlement(self)
+	show_message(get_current_player_name() + " CPU zbudował osadę")
+	return true
+
+
+func apply_engine_road(move: CatanEngine.Move, pos) -> bool:
+	var road = get_visual_road_from_engine_id(pos, move.road_id)
+
+	if road == null:
+		return false
+
+	if not can_build_road(road):
+		return false
+
+	road.build_road(self)
+	show_message(get_current_player_name() + " CPU zbudował drogę")
+	return true
+
+
+func apply_engine_city(move: CatanEngine.Move, pos) -> bool:
+	var vertex = get_visual_vertex_from_engine_id(pos, move.vertex_id)
+
+	if vertex == null:
+		return false
+
+	if not can_upgrade_city(vertex):
+		return false
+
+	vertex.upgrade_to_city(self)
+	show_message(get_current_player_name() + " CPU zbudował miasto")
+	return true
+
+
+func apply_engine_bank_trade(move: CatanEngine.Move) -> bool:
+	if setup_phase:
+		return false
+
+	if waiting_for_robber:
+		return false
+
+	var player_id = get_current_player_id()
+
+	if player_resources[player_id][move.bank_give] < move.bank_give_amount:
+		return false
+
+	player_resources[player_id][move.bank_give] -= move.bank_give_amount
+	player_resources[player_id][move.bank_receive] += 1
+
+	show_message(
+		get_current_player_name()
+		+ " CPU wymienia "
+		+ str(move.bank_give_amount)
+		+ " "
+		+ get_resource_name_pl(move.bank_give)
+		+ " na 1 "
+		+ get_resource_name_pl(move.bank_receive)
+	)
+
+	return true
+
+
+func apply_engine_discard(move: CatanEngine.Move) -> bool:
+	var player_id = get_current_player_id()
+
+	for resource_type in move.discard_resources.keys():
+		var amount = move.discard_resources[resource_type]
+
+		if not player_resources[player_id].has(resource_type):
+			continue
+
+		player_resources[player_id][resource_type] = max(player_resources[player_id][resource_type] - amount, 0)
+
+	update_resources_ui()
+	show_message(get_current_player_name() + " CPU odrzuca surowce")
+	return true
+
+
+func apply_engine_robber(move: CatanEngine.Move, pos) -> bool:
+	if not waiting_for_robber:
+		return false
+
+	var hex_info = get_hex_info_from_engine_id(pos, move.robber_hex_id)
+
+	if hex_info == null:
+		return false
+
+	move_robber_to(hex_info)
+	return true
+
+
+func get_visual_vertex_from_engine_id(pos, vertex_id: int):
+	if vertex_id < 0 or vertex_id >= pos.vertices.size():
+		return null
+
+	var local_key := engine._get_vertex_pixel_key(pos, vertex_id)
+	var world_key := local_key_to_world_key(local_key)
+
+	if vertices_by_key.has(world_key):
+		return vertices_by_key[world_key]
+
+	return null
+
+
+func get_visual_road_from_engine_id(pos, road_id: int):
+	if road_id < 0 or road_id >= pos.roads.size():
+		return null
+
+	var engine_road = pos.roads[road_id]
+
+	var local_a := engine._get_vertex_pixel_key(pos, engine_road.vertex_a_id)
+	var local_b := engine._get_vertex_pixel_key(pos, engine_road.vertex_b_id)
+
+	var world_a := local_key_to_world_key(local_a)
+	var world_b := local_key_to_world_key(local_b)
+
+	var road_key := get_road_key(world_a, world_b)
+
+	if roads_by_key.has(road_key):
+		return roads_by_key[road_key]
+
+	return null
+
+
+func get_hex_info_from_engine_id(pos, hex_id: int):
+	if hex_id < 0 or hex_id >= pos.hexes.size():
+		return null
+
+	var engine_hex = pos.hexes[hex_id]
+
+	for hex_info in hex_infos:
+		var q = hex_info["axial_q"] if hex_info.has("axial_q") else null
+		var r = hex_info["axial_r"] if hex_info.has("axial_r") else null
+
+		if q == engine_hex.axial_q and r == engine_hex.axial_r:
+			return hex_info
+
+	return null
+
+
+func local_key_to_world_key(local_key: String) -> String:
+	var parts := local_key.split("_")
+
+	if parts.size() != 2:
+		return local_key
+
+	var x := int(parts[0]) + int(round(board_offset.x))
+	var y := int(parts[1]) + int(round(board_offset.y))
+
+	return "%d_%d" % [x, y]
