@@ -905,9 +905,60 @@ func get_other_vertex(road, vertex):
 
 func on_settlement_built(vertex, player_id: int):
 	if setup_phase:
+		if is_second_setup_round():
+			give_starting_resources_from_vertex(vertex, player_id)
+
 		setup_waiting_for_road = true
 		setup_last_vertex = vertex
 		update_turn_ui()
+
+
+func is_second_setup_round() -> bool:
+	return setup_step >= player_count
+
+
+func give_starting_resources_from_vertex(vertex, player_id: int):
+	var vertex_key = get_vertex_key(vertex.position)
+
+	var gained = {
+		"wood": 0,
+		"brick": 0,
+		"sheep": 0,
+		"wheat": 0,
+		"ore": 0
+	}
+
+	for hex_info in hex_infos:
+		if not hex_info["vertex_keys"].has(vertex_key):
+			continue
+
+		var resource_type = hex_info["resource_type"]
+
+		if resource_type == "desert":
+			continue
+
+		player_resources[player_id][resource_type] += 1
+		gained[resource_type] += 1
+
+	var parts: Array[String] = []
+
+	for resource_type in resource_order:
+		if gained[resource_type] > 0:
+			parts.append(get_resource_name_pl(resource_type) + " +" + str(gained[resource_type]))
+
+	if parts.is_empty():
+		show_message(player_names[player_id] + " nie dostał startowych surowców")
+	else:
+		var summary := ""
+
+		for i in range(parts.size()):
+			if i > 0:
+				summary += ", "
+			summary += parts[i]
+
+		show_message(player_names[player_id] + " dostaje startowe surowce: " + summary)
+
+	update_resources_ui()
 
 
 func on_city_built(vertex, player_id: int):
