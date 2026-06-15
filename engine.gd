@@ -1037,7 +1037,7 @@ func new_game(num_players: int = 3) -> BoardPosition:
 ## This is the primary interface: the game calls this, gets a Move back,
 ## applies it, and calls again if it's still the same player's turn.
 func search(pos: BoardPosition, time: float, personality: Personality) -> Move:
-	
+	current_vp = pos.players[pos.current_player].victory_points
 	if personality == Personality.RANDOM:
 		var move_list: Array[Move] = pos.generate_moves()
 
@@ -1050,6 +1050,7 @@ func search(pos: BoardPosition, time: float, personality: Personality) -> Move:
 	else:
 		return null
 
+var current_vp = 0
 
 # ---------------------------------------------------------------------------
 # STATIC EVALUATION (for MCTS leaf nodes)
@@ -1088,7 +1089,7 @@ func evaluate(pos: BoardPosition) -> Array[float]:
 		var score: float = 0.0
 
 		# 1. Raw victory points (highest weight — primary win condition)
-		score += p.victory_points * 1000.0
+		score += p.victory_points - current_vp * 1000.0
 
 		# 2. Building count (each building provides VP + production + expansion)
 		score += p.settlements_built * 80.0    # 1 VP + production potential
@@ -1193,6 +1194,24 @@ class MCTSNode:
 	func is_fully_expanded() -> bool:
 		return untried_moves.is_empty()
 
+	## Recursively clear the entire subtree rooted at this node.
+	## Breaks all circular references (parent ←→ children) and
+	## nullifies the large state so the GC can reclaim everything.
+	func clear() -> void:
+		for child in children:
+			child.clear()
+		children.clear()
+		parent = null
+		state = null
+		untried_moves.clear()
+		value_sums.clear()
+
+
+## Value normalisation constant for MCTS.
+## evaluate() returns scores roughly in [-2000, 20000].
+## We squash them into [-1, 1] with tanh(x / SCALE) so the
+## UCB exploration term (≈1.4) can overcome Q-value differences.
+const MCTS_VALUE_SCALE: float = 1000.0
 
 ## Run MCTS from the given root position within the time budget.
 ## Uses PUCT (uniform prior) for node selection and evaluate() at leaves.
@@ -1202,6 +1221,11 @@ func mcts_search(root_state: BoardPosition, time_limit: float) -> Move:
 	var limit_usec := int(time_limit * 1_000_000)
 	var iterations := 0
 	const EXPLORATION := sqrt(2.0)
+
+	# Early exit pruning
+	var moves = root_state.generate_moves()
+	if moves.size() == 1:
+		return moves[0]
 
 	while true:
 		var elapsed := Time.get_ticks_usec() - start_usec
@@ -1221,7 +1245,14 @@ func mcts_search(root_state: BoardPosition, time_limit: float) -> Move:
 			node = node.expand(self)
 
 		# --- EVALUATION (leaf) ---
-		var values := evaluate(node.state)
+		var raw := evaluate(node.state)
+
+		# Normalise raw scores to [-1, 1] via tanh so that the
+		# UCB exploration term (≈1.4) can compete with Q-values.
+		var values: Array[float] = []
+		values.resize(raw.size())
+		for pid in range(raw.size()):
+			values[pid] = tanh(raw[pid] / MCTS_VALUE_SCALE)
 
 		# --- BACKPROPAGATION ---
 		while node != null:
@@ -1248,7 +1279,9 @@ func mcts_search(root_state: BoardPosition, time_limit: float) -> Move:
 			var avg: float = 0.0
 			if c.visits > 0:
 				avg = c.value_sums[root_state.current_player] / float(c.visits)
-			print("  #%d: %s  (visits=%d  avg=%.3f)" % [i + 1, str(c.move), c.visits, avg])
+			# avg is in [-1,1]; rescale back to readable score
+			var display_val := avg * MCTS_VALUE_SCALE
+			print("  #%d: %s  (visits=%d  avg=%.4f  ≈%.1f)" % [i + 1, str(c.move), c.visits, avg, display_val])
 
 	# --- FINAL SELECTION (most visited child) ---
 	var best: MCTSNode = null
@@ -1260,9 +1293,14 @@ func mcts_search(root_state: BoardPosition, time_limit: float) -> Move:
 
 	if best == null:
 		print("  WARNING: no children expanded, returning END_TURN")
+		root.clear()
 		return Move.new(Move.Type.END_TURN)
 
 	print("  Chosen: %s" % str(best.move))
+
+	# --- CLEANUP: break circular references to prevent memory leak ---
+	root.clear()
+
 	return best.move
 
 
