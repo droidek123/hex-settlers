@@ -237,6 +237,12 @@ class BoardPosition:
 	var vertices: Array[Vertex] = []     # Always 54 entries
 	var roads: Array[Road] = []          # Always 72 entries
 
+	# --- Topology key mappings (for integration with game.gd) ---
+	# Maps pixel-key strings ("x_y") to vertex/road indices.
+	# Populated by _initialize_board_topology.
+	var vertex_key_to_id: Dictionary = {}
+	var road_key_to_id: Dictionary = {}
+
 	# --- Players ---
 	var players: Array[PlayerState] = [] # Length = num_players
 
@@ -349,7 +355,7 @@ class BoardPosition:
 	func _movegen_setup_settlement() -> Array[Move]:
 		# TODO: evaluate best vertex (resource probability, port access, blocking)
 		# For now, pick first legal vertex.
-		var move_list = []
+		var move_list : Array[Move] = []
 		
 		for v in vertices:
 			if _is_valid_settlement_placement(v.id, true):
@@ -362,7 +368,7 @@ class BoardPosition:
 	func _movegen_setup_road() -> Array[Move]:
 		# Must attach to the last settlement placed in setup.
 		var anchor: int = setup_last_vertex_id
-		var move_list = []
+		var move_list: Array[Move] = []
 		
 		for r in roads:
 			if r.owner_id == -1 and (r.vertex_a_id == anchor or r.vertex_b_id == anchor):
@@ -521,12 +527,10 @@ class BoardPosition:
 
 
 	func _movegen_road_building() -> Array[Move]:
-		# Place up to 2 free roads.
 		if free_roads_remaining <= 0:
 			return [Move.new(Move.Type.END_TURN)]
 		# TODO: pick best free road
-		
-		var move_list = []
+		var move_list: Array[Move] = []
 		for r in roads:
 			if _is_valid_road_placement(r.id):
 				var move := Move.new(Move.Type.BUILD_ROAD)
@@ -1025,14 +1029,13 @@ func new_game(num_players: int = 3) -> BoardPosition:
 ## This is the primary interface: the game calls this, gets a Move back,
 ## applies it, and calls again if it's still the same player's turn.
 func search(pos: BoardPosition) -> Move:
-	var move_list : Array[Move] = pos.generate_moves()
-	
+	var move_list: Array[Move] = pos.generate_moves()
+
+	if move_list.is_empty():
+		return Move.new(Move.Type.END_TURN)
+
 	return move_list.pick_random()
 
-
-## Apply a move to a board position, returning a new position.
-## The engine uses this internally for look-ahead; the game can also use
-## it to apply the returned move.
 func apply_move(pos: BoardPosition, move: Move) -> BoardPosition:
 	var new_board = pos.clone()
 	_apply_move_to_board(new_board, move)
@@ -1188,8 +1191,16 @@ func _initialize_board_topology(board_position: BoardPosition) -> void:
 			arr.append(hex_id)
 		b.vertices[vid].adjacent_hex_indices = arr
 
+	# Store topology key mappings for adapters used by game.gd / CPU integration.
+	b.vertex_key_to_id = vertex_key_to_id.duplicate()
+	b.road_key_to_id = road_key_to_id.duplicate()
+
 	assert(b.vertices.size() == VERTEX_COUNT, "Expected %d vertices, got %d" % [VERTEX_COUNT, b.vertices.size()])
 	assert(b.roads.size() == ROAD_COUNT, "Expected %d roads, got %d" % [ROAD_COUNT, b.roads.size()])
+
+	# Store key mappings (for integration with game.gd via from_game_state)
+	b.vertex_key_to_id = vertex_key_to_id
+	b.road_key_to_id = road_key_to_id
 
 	# --- Development deck ---
 	b.dev_deck_remaining = DECK_TOTAL
@@ -1223,17 +1234,205 @@ func _road_key_from_vertex_keys(ka: String, kb: String) -> String:
 ## This is the adapter function the game calls to convert its visual state
 ## into the engine's internal representation before calling search().
 func from_game_state(game_node: Node) -> BoardPosition:
-	# TODO: implement adapter from game.gd's data structures
-	var pos := BoardPosition.new(2)  # Default 2 players
+	var g := game_node
+	var num_players: int = g.player_count
+
+	# Ważne: używamy new_game(), bo samo BoardPosition.new()
+	# tworzy tylko graczy, ale nie tworzy topologii hexów / wierzchołków / dróg.
+	# new_game() zachowuje logikę zaciągniętego brancha i tworzy pełną topologię silnika.
+	var pos := new_game(num_players)
+
+	# Board offset: game.gd trzyma klucze/pozycje z board_offset,
+	# a engine liczy topologię lokalnie, bez board_offset.
+	var bo: Vector2 = g.board_offset
+
+	# --- Hexes: match by axial coordinates ---
+	# Preferujemy axial_q / axial_r z game.gd, ale zostawiamy fallback
+	# po pozycji pikselowej dla starszych wersji game.gd.
+	var axial_to_hex_id: Dictionary = {}
+
+	for i in range(pos.hexes.size()):
+		var key := "%d_%d" % [pos.hexes[i].axial_q, pos.hexes[i].axial_r]
+		axial_to_hex_id[key] = i
+
+	for hex_info in g.hex_infos:
+		var pixel_no_offset: Vector2 = hex_info["position"] - bo
+
+		var hq: int
+		var hr: int
+
+		if hex_info.has("axial_q") and hex_info.has("axial_r"):
+			hq = hex_info["axial_q"]
+			hr = hex_info["axial_r"]
+		else:
+			hq = _pixel_to_axial_q(pixel_no_offset)
+			hr = _pixel_to_axial_r(pixel_no_offset)
+
+		var key := "%d_%d" % [hq, hr]
+		var hid: int = -1
+
+		if axial_to_hex_id.has(key):
+			hid = axial_to_hex_id[key]
+		else:
+			# Fallback: find closest hex by pixel distance.
+			var best_dist := INF
+			for i in range(pos.hexes.size()):
+				var hp := _axial_to_pixel(pos.hexes[i].axial_q, pos.hexes[i].axial_r)
+				var dp: float = hp.distance_to(pixel_no_offset)
+				if dp < best_dist:
+					best_dist = dp
+					hid = i
+
+		if hid >= 0:
+			pos.hexes[hid].resource = hex_info["resource_type"]
+			pos.hexes[hid].token = hex_info["number"]
+			pos.hexes[hid].has_robber = hex_info.get("has_robber", false)
+
+	# --- Vertices: match by pixel-space key ---
+	# Engine trzyma klucze lokalne, a game.gd ma klucze z board_offset.
+	# Dlatego klucz engine trzeba zamienić na klucz świata gry.
+	var local_key_to_vid: Dictionary = {}
+	var world_key_to_vid: Dictionary = {}
+
+	for vid in range(pos.vertices.size()):
+		var local_key := _get_vertex_pixel_key(pos, vid)
+		var world_key := _local_key_to_world_key(g, local_key)
+
+		local_key_to_vid[local_key] = vid
+		world_key_to_vid[world_key] = vid
+
+	for world_key in g.vertices_by_key:
+		var visual_vertex = g.vertices_by_key[world_key]
+
+		if world_key_to_vid.has(world_key):
+			var vid: int = world_key_to_vid[world_key]
+			pos.vertices[vid].owner_id = visual_vertex.owner_id
+			pos.vertices[vid].is_city = visual_vertex.is_city
+
+	# --- Roads: match by endpoint pixel keys ---
+	for rid in range(pos.roads.size()):
+		var engine_road = pos.roads[rid]
+
+		var local_a := _get_vertex_pixel_key(pos, engine_road.vertex_a_id)
+		var local_b := _get_vertex_pixel_key(pos, engine_road.vertex_b_id)
+
+		var world_a := _local_key_to_world_key(g, local_a)
+		var world_b := _local_key_to_world_key(g, local_b)
+
+		var world_road_key := _road_key_from_vertex_keys(world_a, world_b)
+
+		if g.roads_by_key.has(world_road_key):
+			var visual_road = g.roads_by_key[world_road_key]
+			pos.roads[rid].owner_id = visual_road.owner_id
+
+	# --- Player state ---
+	for pid in range(num_players):
+		pos.players[pid].resources = g.player_resources[pid].duplicate()
+		pos.players[pid].victory_points = g.victory_points[pid]
+		pos.players[pid].settlements_built = g.player_settlement_counts[pid]
+		pos.players[pid].roads_built = g.player_road_counts[pid]
+		pos.players[pid].cities_built = g.player_city_counts[pid]
+
+	# --- Phase and turn tracking ---
+	pos.current_player = g.current_player_index
+	pos.turn_number = 0
+
+	if g.game_over:
+		pos.phase = Phase.MAIN
+	elif g.waiting_for_robber:
+		pos.phase = Phase.ROBBER
+		pos.robber_player = g.current_player_index
+	elif g.setup_phase:
+		pos.setup_placements = g.setup_step
+
+		if g.setup_last_vertex != null:
+			for world_key in g.vertices_by_key:
+				if g.vertices_by_key[world_key] == g.setup_last_vertex:
+					var local_key := _world_key_to_local_key(g, world_key)
+
+					if local_key_to_vid.has(local_key):
+						pos.setup_last_vertex_id = local_key_to_vid[local_key]
+					break
+
+		if g.setup_step >= num_players * 2:
+			pos.phase = Phase.MAIN
+		elif g.setup_step >= num_players:
+			pos.phase = Phase.SETUP_BACKWARD
+		else:
+			pos.phase = Phase.SETUP_FORWARD
+	else:
+		pos.phase = Phase.MAIN
+
+	# --- Longest road / Largest army ---
+	pos.longest_road_player = g.longest_road_owner
+	pos.longest_road_length = g.longest_road_length
+
 	return pos
+
+
+## Helper: get the pixel-space key for an engine vertex.
+## Uses the stored topology key mapping (no board_offset).
+func _get_vertex_pixel_key(pos: BoardPosition, vid: int) -> String:
+	for ek in pos.vertex_key_to_id:
+		if pos.vertex_key_to_id[ek] == vid:
+			return ek
+	return ""
+func _pixel_to_axial_q(pixel: Vector2) -> int:
+	return int(round(pixel.x / (HEX_SIZE * 3.0 / 2.0)))
+
+
+## Helper: convert pixel position back to axial r coordinate (approximate).
+func _pixel_to_axial_r(pixel: Vector2) -> int:
+	var q := _pixel_to_axial_q(pixel)
+	return int(round((pixel.y - HEX_SIZE * sqrt(3) / 2.0 * q) / (HEX_SIZE * sqrt(3))))
+
+
+
+
+
+## Convert engine-local pixel key into game.gd world key with board_offset.
+func _local_key_to_world_key(game_node: Node, local_key: String) -> String:
+	var parts := local_key.split("_")
+
+	if parts.size() != 2:
+		return local_key
+
+	var x := int(parts[0]) + int(round(game_node.board_offset.x))
+	var y := int(parts[1]) + int(round(game_node.board_offset.y))
+
+	return "%d_%d" % [x, y]
+
+
+## Convert game.gd world key into engine-local pixel key without board_offset.
+func _world_key_to_local_key(game_node: Node, world_key: String) -> String:
+	var parts := world_key.split("_")
+
+	if parts.size() != 2:
+		return world_key
+
+	var x := int(parts[0]) - int(round(game_node.board_offset.x))
+	var y := int(parts[1]) - int(round(game_node.board_offset.y))
+
+	return "%d_%d" % [x, y]
 
 
 ## Convert a Move into game.gd actions.
 ## This is the adapter function the game calls to apply the engine's move.
 func to_game_action(move: Move) -> Dictionary:
-	# TODO: return a dictionary the game can interpret
 	return {
 		"type": move.type,
 		"vertex_id": move.vertex_id,
 		"road_id": move.road_id,
+		"monopoly_resource": move.monopoly_resource,
+		"yop_resource_1": move.yop_resource_1,
+		"yop_resource_2": move.yop_resource_2,
+		"bank_give": move.bank_give,
+		"bank_receive": move.bank_receive,
+		"bank_give_amount": move.bank_give_amount,
+		"trade_target_player": move.trade_target_player,
+		"trade_give": move.trade_give,
+		"trade_receive": move.trade_receive,
+		"robber_hex_id": move.robber_hex_id,
+		"robber_steal_target": move.robber_steal_target,
+		"discard_resources": move.discard_resources,
 	}

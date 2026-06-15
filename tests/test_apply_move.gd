@@ -19,6 +19,7 @@ var _errors: Array[String] = []
 func _init() -> void:
 	_engine = CatanEngine.new()
 	run_all()
+	_engine.free()
 	quit()
 
 func run_all() -> void:
