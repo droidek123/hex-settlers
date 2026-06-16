@@ -51,6 +51,14 @@ const TOKEN_COUNTS: Dictionary = {
 # ---------------------------------------------------------------------------
 # ENUMS
 # ---------------------------------------------------------------------------
+enum Personality {
+	RANDOM,
+	MCTS
+}
+
+func get_random_personality():
+	return Personality.values().pick_random()
+
 
 enum Phase {
 	SETUP_FORWARD,      # Initial placement round 1 (p0, p1, p2, p3)
@@ -385,25 +393,25 @@ class BoardPosition:
 
 		# --- 1. Play development cards ---
 		# Knights
-		if p.dev_cards[DevCard.KNIGHT] > 0:
-			moves.append(Move.new(Move.Type.PLAY_KNIGHT))
-		# Monopoly — one move per resource type
-		if p.dev_cards[DevCard.MONOPOLY] > 0:
-			for res in RESOURCE_TYPES:
-				var m := Move.new(Move.Type.PLAY_MONOPOLY)
-				m.monopoly_resource = res
-				moves.append(m)
+		#if p.dev_cards[DevCard.KNIGHT] > 0:
+			#moves.append(Move.new(Move.Type.PLAY_KNIGHT))
+		## Monopoly — one move per resource type
+		#if p.dev_cards[DevCard.MONOPOLY] > 0:
+			#for res in RESOURCE_TYPES:
+				#var m := Move.new(Move.Type.PLAY_MONOPOLY)
+				#m.monopoly_resource = res
+				#moves.append(m)
 		# Year of Plenty — all unordered pairs (including same resource twice)
-		if p.dev_cards[DevCard.YEAR_OF_PLENTY] > 0:
-			for i in range(RESOURCE_TYPES.size()):
-				for j in range(i, RESOURCE_TYPES.size()):
-					var m := Move.new(Move.Type.PLAY_YEAR_OF_PLENTY)
-					m.yop_resource_1 = RESOURCE_TYPES[i]
-					m.yop_resource_2 = RESOURCE_TYPES[j]
-					moves.append(m)
-		# Road Building
-		if p.dev_cards[DevCard.ROAD_BUILDING] > 0:
-			moves.append(Move.new(Move.Type.PLAY_ROAD_BUILDING))
+		#if p.dev_cards[DevCard.YEAR_OF_PLENTY] > 0:
+			#for i in range(RESOURCE_TYPES.size()):
+				#for j in range(i, RESOURCE_TYPES.size()):
+					#var m := Move.new(Move.Type.PLAY_YEAR_OF_PLENTY)
+					#m.yop_resource_1 = RESOURCE_TYPES[i]
+					#m.yop_resource_2 = RESOURCE_TYPES[j]
+					#moves.append(m)
+		## Road Building
+		#if p.dev_cards[DevCard.ROAD_BUILDING] > 0:
+			#moves.append(Move.new(Move.Type.PLAY_ROAD_BUILDING))
 
 		# --- 2. Build settlement ---
 		for v in vertices:
@@ -430,9 +438,9 @@ class BoardPosition:
 					moves.append(m)
 
 		# --- 5. Buy development card ---
-		if dev_deck_remaining > 0:
-			if _can_afford(pid, DEV_CARD_COST):
-				moves.append(Move.new(Move.Type.BUY_DEV_CARD))
+		#if dev_deck_remaining > 0:
+			#if _can_afford(pid, DEV_CARD_COST):
+				#moves.append(Move.new(Move.Type.BUY_DEV_CARD))
 
 		# --- 6. Trade with bank ---
 		# Determine the best trade ratio for each resource the player has
@@ -1028,13 +1036,282 @@ func new_game(num_players: int = 3) -> BoardPosition:
 ## Return the best move for the current player given the board position.
 ## This is the primary interface: the game calls this, gets a Move back,
 ## applies it, and calls again if it's still the same player's turn.
-func search(pos: BoardPosition) -> Move:
-	var move_list: Array[Move] = pos.generate_moves()
+func search(pos: BoardPosition, time: float, personality: Personality) -> Move:
+	if personality == Personality.RANDOM:
+		var move_list: Array[Move] = pos.generate_moves()
 
-	if move_list.is_empty():
+		if move_list.is_empty():
+			return Move.new(Move.Type.END_TURN)
+
+		return move_list.pick_random()
+	elif personality == Personality.MCTS:
+		return mcts_search(pos, time)
+	else:
+		return null
+
+# ---------------------------------------------------------------------------
+# STATIC EVALUATION (for MCTS leaf nodes)
+# ---------------------------------------------------------------------------
+
+## Dice combination counts, indexed by token number (0..12).
+## The probability of rolling N is TOKEN_COMBOS[N] / 36.
+const TOKEN_COMBOS: Array[int] = [
+	0, 0,  # 0, 1 — impossible
+	1, 2,  # 2, 3
+	3, 4,  # 4, 5
+	5, 0,  # 6, 7 (7 = robber, no production)
+	5, 4,  # 8, 9
+	3, 2,  # 10, 11
+	1      # 12
+]
+
+## Static evaluation of a BoardPosition from each player's perspective.
+## Returns an array of scores, one per player. Higher = better position.
+## Designed for use as leaf-node evaluation in MCTS.
+##
+## Factors weighted into the score:
+##   - Victory points (heaviest)
+##   - Buildings (settlements, cities, roads)
+##   - Resources in hand (liquid convertible value)
+##   - Development cards held
+##   - Knights played (toward Largest Army)
+##   - Longest Road / Largest Army possession
+##   - Resource production potential from hex adjacency
+func evaluate(pos: BoardPosition) -> Array[float]:
+	var scores: Array[float] = []
+	scores.resize(pos.num_players)
+
+	var ex_vp = pos.players.map(func(p): return p.victory_points).reduce(func(acc, x): return acc + x, 0.0) / pos.players.size()
+
+	for pid in range(pos.num_players):
+		var p := pos.players[pid]
+		var score: float = 0.0
+
+		# 1. Raw victory points (highest weight — primary win condition)
+		score += (p.victory_points - ex_vp) * 1000.0
+
+		# 2. Building count (each building provides VP + production + expansion)
+		score += p.settlements_built * 80.0    # 1 VP + production potential
+		score += p.cities_built * 200.0        # 2 VP + double production
+		score += p.roads_built * 20.0           # enables expansion
+
+		# 3. Resources in hand (liquid — can be converted to buildings / dev cards)
+		for r in RESOURCE_TYPES:
+			score += p.resources[r] * 10.0
+
+		# 4. Development cards (unplayed) — hidden value
+		var total_dev: int = 0
+		for k in p.dev_cards:
+			total_dev += p.dev_cards[k]
+		score += total_dev * 25.0
+
+		# 5. Knights played — contributes toward Largest Army (threshold: 3)
+		score += p.knights_played * 35.0
+
+		# 6. Longest Road / Largest Army bonus ownership
+		if pos.longest_road_player == pid:
+			score += 200.0  # equivalent to 2 VP
+		if pos.largest_army_player == pid:
+			score += 200.0
+
+		# 7. Resource production potential from settlements/cities
+		# Sum the expected resource yield per dice roll, weighted by
+		# the dice-probability of each adjacent hex's token number.
+		var prod_score: float = 0.0
+		for v in pos.vertices:
+			if v.owner_id == pid:
+				var mult: float = 2.0 if v.is_city else 1.0
+				for hex_id in v.adjacent_hex_indices:
+					var h := pos.hexes[hex_id]
+					if h.resource == "desert" or h.has_robber:
+						continue
+					var combos: int = TOKEN_COMBOS[h.token] if h.token >= 0 and h.token < TOKEN_COMBOS.size() else 0
+					prod_score += float(combos) * mult
+		# Normalise by total combos (36) and scale to meaningful magnitude
+		score += prod_score * (500.0 / 36.0)
+
+		scores[pid] = score
+		
+	return scores
+
+
+# ---------------------------------------------------------------------------
+# MONTE CARLO TREE SEARCH
+# ---------------------------------------------------------------------------
+
+## A node in the MCTS tree. Stores the position, the move that led here,
+## child nodes, visitation statistics, and remaining untried moves.
+class MCTSNode:
+	var state: BoardPosition
+	var parent: MCTSNode
+	var move: Move
+	var children: Array[MCTSNode] = []
+	var untried_moves: Array[Move] = []
+	var visits: int = 0
+	var value_sums: Array[float] = []  # cumulative value per player
+
+	func _init(s: BoardPosition, p: MCTSNode, m: Move) -> void:
+		state = s
+		parent = p
+		move = m
+		untried_moves = s.generate_moves()
+		value_sums.resize(s.num_players)
+		for i in range(s.num_players):
+			value_sums[i] = 0.0
+
+	## UCB1 score from the perspective of player `pid`.
+	## Returns +INF for unvisited children.
+	func ucb_score(pid: int, exploration: float) -> float:
+		if visits == 0:
+			return INF
+		var q: float = value_sums[pid] / float(visits)
+		var log_n: float = log(float(parent.visits)) if parent != null else 1.0
+		var explore: float = exploration * sqrt(log_n / float(visits))
+		return q + explore
+
+	## Pick the child with the best UCB score from the perspective of the
+	## player whose turn it is at this node.
+	func select_child(exploration: float) -> MCTSNode:
+		var pid := state.current_player
+		var best: MCTSNode = null
+		var best_score: float = -INF
+		for child in children:
+			var score := child.ucb_score(pid, exploration)
+			if score > best_score:
+				best_score = score
+				best = child
+		return best
+
+	## Expand one untried move, returning the new child node.
+	func expand(engine: CatanEngine) -> MCTSNode:
+		var m: Move = untried_moves.pop_back()
+		var new_state := engine.apply_move(state, m)
+		var child := MCTSNode.new(new_state, self, m)
+		children.append(child)
+		return child
+
+	func is_fully_expanded() -> bool:
+		return untried_moves.is_empty()
+
+	## Average value for player `pid` across all visits.
+	## Returns 0.0 if the node has never been visited.
+	func get_avg(pid: int) -> float:
+		if visits == 0:
+			return 0.0
+		return value_sums[pid] / float(visits)
+
+	## Recursively clear the entire subtree rooted at this node.
+	## Breaks all circular references (parent ←→ children) and
+	## nullifies the large state so the GC can reclaim everything.
+	func clear() -> void:
+		for child in children:
+			child.clear()
+		children.clear()
+		parent = null
+		state = null
+		untried_moves.clear()
+		value_sums.clear()
+
+
+## Value normalisation constant for MCTS.
+## evaluate() returns scores roughly in [-2000, 20000].
+## We squash them into [-1, 1] with tanh(x / SCALE) so the
+## UCB exploration term (≈1.4) can overcome Q-value differences.
+const MCTS_VALUE_SCALE: float = 5000.0
+
+## Run MCTS from the given root position within the time budget.
+## Uses PUCT (uniform prior) for node selection and evaluate() at leaves.
+func mcts_search(root_state: BoardPosition, time_limit: float) -> Move:
+	var root := MCTSNode.new(root_state, null, null)
+	var start_usec := Time.get_ticks_usec()
+	var limit_usec := int(time_limit * 1_000_000)
+	var iterations := 0
+	const EXPLORATION := sqrt(2.0)
+
+	# Early exit pruning
+	var moves = root_state.generate_moves()
+	if moves.size() == 1:
+		root.clear()
+		return moves[0]
+
+	while true:
+		var elapsed := Time.get_ticks_usec() - start_usec
+		if elapsed >= limit_usec:
+			break
+
+		# --- SELECTION ---
+		var node := root
+		while node.is_fully_expanded():
+			# All moves have been tried at this node; descend using UCB
+			if node.children.is_empty():
+				break  # safety: no children but claimed fully expanded
+			node = node.select_child(EXPLORATION)
+
+		# --- EXPANSION ---
+		if not node.is_fully_expanded():
+			node = node.expand(self)
+
+		# --- EVALUATION (leaf) ---
+		var raw := evaluate(node.state)
+
+		# Normalise raw scores to [-1, 1] via tanh so that the
+		# UCB exploration term (≈1.4) can compete with Q-values.
+		var values: Array[float] = []
+		values.resize(raw.size())
+		for pid in range(raw.size()):
+			values[pid] = tanh(raw[pid] / MCTS_VALUE_SCALE)
+
+		# --- BACKPROPAGATION ---
+		while node != null:
+			node.visits += 1
+			for pid in range(node.state.num_players):
+				node.value_sums[pid] += values[pid]
+			node = node.parent
+
+		iterations += 1
+
+	# --- LOGGING ---
+	var elapsed_s: float = (Time.get_ticks_usec() - start_usec) / 1_000_000.0
+	print("MCTS finished: %d iterations in %.3f s" % [iterations, elapsed_s])
+	print("  Root visits: %d, children expanded: %d" % [root.visits, root.children.size()])
+
+	# Sort children by average value descending for reporting
+	if root.children.size() > 0:
+		var pid := root_state.current_player
+		root.children.sort_custom(func(a: MCTSNode, b: MCTSNode) -> bool:
+			return a.get_avg(pid) > b.get_avg(pid)
+		)
+		# var top_n := mini(root.children.size(), 5)
+		var top_n = root.children.size()
+		for i in range(top_n):
+			var c := root.children[i]
+			var avg: float = c.get_avg(pid)
+			# avg is in [-1,1]; rescale back to readable score
+			var display_val := avg * MCTS_VALUE_SCALE
+			print("  #%d: %s  (visits=%d  avg=%.4f  ≈%.1f)" % [i + 1, str(c.move), c.visits, avg, display_val])
+
+	# --- FINAL SELECTION (highest average value) ---
+	var best: MCTSNode = null
+	var best_avg: float = -INF
+	var pid := root_state.current_player
+	for child in root.children:
+		var avg: float = child.get_avg(pid)
+		if avg > best_avg:
+			best_avg = avg
+			best = child
+
+	if best == null:
+		print("  WARNING: no children expanded, returning END_TURN")
+		root.clear()
 		return Move.new(Move.Type.END_TURN)
 
-	return move_list.pick_random()
+	print("  Chosen: %s" % str(best.move))
+
+	# --- CLEANUP: break circular references to prevent memory leak ---
+	root.clear()
+
+	return best.move
+
 
 func apply_move(pos: BoardPosition, move: Move) -> BoardPosition:
 	var new_board = pos.clone()
@@ -1191,10 +1468,6 @@ func _initialize_board_topology(board_position: BoardPosition) -> void:
 			arr.append(hex_id)
 		b.vertices[vid].adjacent_hex_indices = arr
 
-	# Store topology key mappings for adapters used by game.gd / CPU integration.
-	b.vertex_key_to_id = vertex_key_to_id.duplicate()
-	b.road_key_to_id = road_key_to_id.duplicate()
-
 	assert(b.vertices.size() == VERTEX_COUNT, "Expected %d vertices, got %d" % [VERTEX_COUNT, b.vertices.size()])
 	assert(b.roads.size() == ROAD_COUNT, "Expected %d roads, got %d" % [ROAD_COUNT, b.roads.size()])
 
@@ -1327,11 +1600,11 @@ func from_game_state(game_node: Node) -> BoardPosition:
 
 	# --- Player state ---
 	for pid in range(num_players):
-		pos.players[pid].resources = g.player_resources[pid].duplicate()
-		pos.players[pid].victory_points = g.victory_points[pid]
-		pos.players[pid].settlements_built = g.player_settlement_counts[pid]
-		pos.players[pid].roads_built = g.player_road_counts[pid]
-		pos.players[pid].cities_built = g.player_city_counts[pid]
+		pos.players[pid].resources = g.player_data[pid].resources.duplicate()
+		pos.players[pid].victory_points = g.player_data[pid].vp
+		pos.players[pid].settlements_built = g.player_data[pid].settlement_count
+		pos.players[pid].roads_built = g.player_data[pid].road_count
+		pos.players[pid].cities_built = g.player_data[pid].city_count
 
 	# --- Phase and turn tracking ---
 	pos.current_player = g.current_player_index
