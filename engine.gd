@@ -1037,7 +1037,6 @@ func new_game(num_players: int = 3) -> BoardPosition:
 ## This is the primary interface: the game calls this, gets a Move back,
 ## applies it, and calls again if it's still the same player's turn.
 func search(pos: BoardPosition, time: float, personality: Personality) -> Move:
-	current_vp = pos.players[pos.current_player].victory_points
 	if personality == Personality.RANDOM:
 		var move_list: Array[Move] = pos.generate_moves()
 
@@ -1049,8 +1048,6 @@ func search(pos: BoardPosition, time: float, personality: Personality) -> Move:
 		return mcts_search(pos, time)
 	else:
 		return null
-
-var current_vp = 0
 
 # ---------------------------------------------------------------------------
 # STATIC EVALUATION (for MCTS leaf nodes)
@@ -1084,12 +1081,14 @@ func evaluate(pos: BoardPosition) -> Array[float]:
 	var scores: Array[float] = []
 	scores.resize(pos.num_players)
 
+	var ex_vp = pos.players.map(func(p): return p.victory_points).reduce(func(acc, x): return acc + x, 0.0) / pos.players.size()
+
 	for pid in range(pos.num_players):
 		var p := pos.players[pid]
 		var score: float = 0.0
 
 		# 1. Raw victory points (highest weight — primary win condition)
-		score += p.victory_points - current_vp * 1000.0
+		score += (p.victory_points - ex_vp) * 1000.0
 
 		# 2. Building count (each building provides VP + production + expansion)
 		score += p.settlements_built * 80.0    # 1 VP + production potential
@@ -1132,7 +1131,7 @@ func evaluate(pos: BoardPosition) -> Array[float]:
 		score += prod_score * (500.0 / 36.0)
 
 		scores[pid] = score
-
+		
 	return scores
 
 
@@ -1211,7 +1210,7 @@ class MCTSNode:
 ## evaluate() returns scores roughly in [-2000, 20000].
 ## We squash them into [-1, 1] with tanh(x / SCALE) so the
 ## UCB exploration term (≈1.4) can overcome Q-value differences.
-const MCTS_VALUE_SCALE: float = 1000.0
+const MCTS_VALUE_SCALE: float = 5000.0
 
 ## Run MCTS from the given root position within the time budget.
 ## Uses PUCT (uniform prior) for node selection and evaluate() at leaves.
@@ -1271,9 +1270,10 @@ func mcts_search(root_state: BoardPosition, time_limit: float) -> Move:
 	# Sort children by visit count for reporting
 	if root.children.size() > 0:
 		root.children.sort_custom(func(a: MCTSNode, b: MCTSNode) -> bool:
-			return a.visits > b.visits
+			return a.value_sums[root_state.current_player] / float(a.visits) > b.value_sums[root_state.current_player] / float(b.visits)
 		)
-		var top_n := mini(root.children.size(), 5)
+		# var top_n := mini(root.children.size(), 5)
+		var top_n = root.children.size()
 		for i in range(top_n):
 			var c := root.children[i]
 			var avg: float = 0.0
@@ -1285,10 +1285,16 @@ func mcts_search(root_state: BoardPosition, time_limit: float) -> Move:
 
 	# --- FINAL SELECTION (most visited child) ---
 	var best: MCTSNode = null
-	var best_visits := -1
+	#var best_visits := -1
+	#for child in root.children:
+		#if child.visits > best_visits:
+			#best_visits = child.visits
+			#best = child
+			
+	var best_avg := -1
 	for child in root.children:
-		if child.visits > best_visits:
-			best_visits = child.visits
+		if child.value_sums[root_state.current_player] / float(child.visits) > best_avg:
+			best_avg = child.value_sums[root_state.current_player] / float(child.visits)
 			best = child
 
 	if best == null:
