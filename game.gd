@@ -131,7 +131,7 @@ var waiting_for_robber := false
 #silnik
 var engine: CatanEngine
 var cpu_thinking := false
-var cpu_action_delay := 0.2
+var cpu_action_delay := 1.0
 
 func _ready():
 	randomize()

@@ -1193,6 +1193,13 @@ class MCTSNode:
 	func is_fully_expanded() -> bool:
 		return untried_moves.is_empty()
 
+	## Average value for player `pid` across all visits.
+	## Returns 0.0 if the node has never been visited.
+	func get_avg(pid: int) -> float:
+		if visits == 0:
+			return 0.0
+		return value_sums[pid] / float(visits)
+
 	## Recursively clear the entire subtree rooted at this node.
 	## Breaks all circular references (parent ←→ children) and
 	## nullifies the large state so the GC can reclaim everything.
@@ -1224,6 +1231,7 @@ func mcts_search(root_state: BoardPosition, time_limit: float) -> Move:
 	# Early exit pruning
 	var moves = root_state.generate_moves()
 	if moves.size() == 1:
+		root.clear()
 		return moves[0]
 
 	while true:
@@ -1267,34 +1275,29 @@ func mcts_search(root_state: BoardPosition, time_limit: float) -> Move:
 	print("MCTS finished: %d iterations in %.3f s" % [iterations, elapsed_s])
 	print("  Root visits: %d, children expanded: %d" % [root.visits, root.children.size()])
 
-	# Sort children by visit count for reporting
+	# Sort children by average value descending for reporting
 	if root.children.size() > 0:
+		var pid := root_state.current_player
 		root.children.sort_custom(func(a: MCTSNode, b: MCTSNode) -> bool:
-			return a.value_sums[root_state.current_player] / float(a.visits) > b.value_sums[root_state.current_player] / float(b.visits)
+			return a.get_avg(pid) > b.get_avg(pid)
 		)
 		# var top_n := mini(root.children.size(), 5)
 		var top_n = root.children.size()
 		for i in range(top_n):
 			var c := root.children[i]
-			var avg: float = 0.0
-			if c.visits > 0:
-				avg = c.value_sums[root_state.current_player] / float(c.visits)
+			var avg: float = c.get_avg(pid)
 			# avg is in [-1,1]; rescale back to readable score
 			var display_val := avg * MCTS_VALUE_SCALE
 			print("  #%d: %s  (visits=%d  avg=%.4f  ≈%.1f)" % [i + 1, str(c.move), c.visits, avg, display_val])
 
-	# --- FINAL SELECTION (most visited child) ---
+	# --- FINAL SELECTION (highest average value) ---
 	var best: MCTSNode = null
-	#var best_visits := -1
-	#for child in root.children:
-		#if child.visits > best_visits:
-			#best_visits = child.visits
-			#best = child
-			
-	var best_avg := -1
+	var best_avg: float = -INF
+	var pid := root_state.current_player
 	for child in root.children:
-		if child.value_sums[root_state.current_player] / float(child.visits) > best_avg:
-			best_avg = child.value_sums[root_state.current_player] / float(child.visits)
+		var avg: float = child.get_avg(pid)
+		if avg > best_avg:
+			best_avg = avg
 			best = child
 
 	if best == null:
